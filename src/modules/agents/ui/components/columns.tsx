@@ -1,17 +1,17 @@
 "use client"
 
 import { ColumnDef } from "@tanstack/react-table"
-import { AgentGetOne } from "../../types"
+import { AgentGetMany } from "../../types"
 import { GeneratedAvatar } from "@/components/generated-avatar"
 import { CornerDownRightIcon, VideoIcon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 
 
-export const columns: ColumnDef<AgentGetOne>[] = [
+export const columns: ColumnDef<AgentGetMany[number]>[] = [
   {
     accessorKey: "name",
     header: "Agent Name",
-    cell: ({ row }) => {
+    cell: ({ row }: { row: { original: AgentGetMany[number] } }) => {
       return (
         <div className="flex flex-col gap-y-1">
           <div className="flex items-center gap-x-2">
@@ -35,7 +35,7 @@ export const columns: ColumnDef<AgentGetOne>[] = [
   {
     accessorKey: "meetingCount",
     header: "Meetings",
-    cell: ({ row }) => (
+    cell: ({ row }: { row: { original: AgentGetMany[number] } }) => (
         <Badge
             variant="outline"
             className="flex items-center gap-x-2 [&>svg]:size-4"
