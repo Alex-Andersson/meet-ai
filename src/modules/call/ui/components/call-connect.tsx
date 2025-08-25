@@ -68,8 +68,13 @@ export const CallConnect = ({ meetingId, meetingName, userId, userName, userImag
                     
                     // Now create the client-side call
                     const _call = client.call("default", meetingId);
+                    
+                    // Start with camera disabled but try to get microphone permission
                     _call.camera.disable();
-                    _call.microphone.disable();
+                    
+                    // Don't disable microphone initially - let the user control it
+                    console.log('Call initialized, microphone state:', _call.microphone.enabled);
+                    
                     setCall(_call);
                 } catch (error) {
                     console.error('Error initializing call:', error);
@@ -98,7 +103,7 @@ export const CallConnect = ({ meetingId, meetingName, userId, userName, userImag
     return (
         <StreamVideo client={client}>
             <StreamCall call={call}>
-                <CallUI meetingName={meetingName} />
+                <CallUI meetingName={meetingName} meetingId={meetingId} />
             </StreamCall>
         </StreamVideo>
     );

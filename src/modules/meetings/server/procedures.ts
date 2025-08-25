@@ -114,6 +114,128 @@ export const meetingsRouter = createTRPCRouter({
         });
       }
     }),
+
+  triggerAI: protectedProcedure
+    .input(z.object({ meetingId: z.string() }))
+    .mutation(async ({ input, ctx }) => {
+      try {
+        const [existingMeeting] = await db
+          .select()
+          .from(meetings)
+          .where(
+            and(
+              eq(meetings.id, input.meetingId),
+              eq(meetings.userId, ctx.auth.user.id)
+            )
+          );
+
+        if (!existingMeeting) {
+          throw new TRPCError({
+            code: 'NOT_FOUND',
+            message: 'Meeting not found',
+          });
+        }
+
+        const [existingAgent] = await db
+          .select()
+          .from(agents)
+          .where(eq(agents.id, existingMeeting.agentId));
+
+        if (!existingAgent) {
+          throw new TRPCError({
+            code: 'NOT_FOUND',
+            message: 'Agent not found',
+          });
+        }
+
+        // Update meeting status
+        await db
+          .update(meetings)
+          .set({
+            status: "active",
+            startedAt: new Date(),
+          })
+          .where(eq(meetings.id, existingMeeting.id));
+
+        const call = streamVideo.video.call("default", input.meetingId);
+        
+        // Ensure the agent user exists in Stream
+        await streamVideo.upsertUsers([
+          {
+            id: existingAgent.id,
+            name: existingAgent.name,
+            role: 'user',
+          }
+        ]);
+        
+        console.log('Connecting OpenAI agent manually:', existingAgent.id);
+        console.log('Agent instructions:', existingAgent.instructions);
+        
+        const realtimeClient = await streamVideo.video.connectOpenAi({
+          call,
+          openAiApiKey: process.env.OPENAI_API_KEY!,
+          agentUserId: existingAgent.id,
+        });
+
+        // Add event listeners for debugging
+        realtimeClient.on('session.created', () => {
+          console.log('Manual trigger: OpenAI session created');
+        });
+        
+        realtimeClient.on('session.updated', () => {
+          console.log('Manual trigger: OpenAI session updated');
+        });
+        
+        realtimeClient.on('conversation.item.created', (event: any) => {
+          console.log('Manual trigger: OpenAI conversation item created:', event);
+        });
+        
+        realtimeClient.on('response.audio_transcript.delta', (event: any) => {
+          console.log('Manual trigger: OpenAI audio transcript:', event.delta);
+        });
+        
+        realtimeClient.on('error', (event: any) => {
+          console.error('Manual trigger: OpenAI error:', event);
+        });
+
+        realtimeClient.updateSession({
+          instructions: `${existingAgent.instructions}
+
+Important: You are participating in a live voice conversation. Actively listen and respond when appropriate. Always be conversational and helpful. When you hear someone speaking, feel free to respond naturally.
+
+When you first join the call, introduce yourself briefly with something like "Hello! I'm ${existingAgent.name}, your AI assistant. I'm here and ready to help with the meeting."`,
+          voice: 'alloy',
+          input_audio_transcription: {
+            model: 'whisper-1'
+          },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.3,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 1000
+          },
+          tool_choice: 'auto'
+        });
+        
+        // Send an initial greeting message
+        setTimeout(() => {
+          realtimeClient.sendUserMessageContent([{
+            type: 'input_text',
+            text: `Hello! I'm ${existingAgent.name}, your AI assistant. I just joined the call and I'm ready to help.`
+          }]);
+        }, 2000);
+
+        console.log('Manual AI trigger completed successfully');
+
+        return { success: true, message: 'AI agent connected successfully' };
+      } catch (error) {
+        console.error('Error triggering AI:', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error instanceof Error ? error.message : 'Failed to connect AI agent',
+        });
+      }
+    }),
   update: protectedProcedure
     .input(meetingsUpdateSchema)
     .mutation(async ({ input, ctx }) => {
