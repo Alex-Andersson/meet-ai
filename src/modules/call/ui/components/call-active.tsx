@@ -20,7 +20,7 @@ export const CallActive = ({ onLeave, meetingName, meetingId }: Props) => {
   const { microphone } = useMicrophoneState();
   const call = useCall();
   
-  // Enhanced debugging
+  // Enhanced debugging - only run once on mount and when critical values change
   useEffect(() => {
     console.log('=== CALL ACTIVE DEBUG ===');
     console.log('Meeting ID passed to component:', meetingId);
@@ -37,7 +37,7 @@ export const CallActive = ({ onLeave, meetingName, meetingId }: Props) => {
         microphoneState: call.microphone
       });
     }
-  }, [microphone.enabled, call, meetingId, meetingName, aiJoined, microphone]);
+  }, [meetingId, meetingName]); // Only depend on props that don't change frequently
   
   const handleToggleMicrophone = async () => {
     try {

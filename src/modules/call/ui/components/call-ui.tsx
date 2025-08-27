@@ -17,6 +17,14 @@ export const CallUI = ({ meetingName, meetingId }: Props) => {
         if (!call) return;
         
         try {
+            // Check if we're already joined or joining
+            if (call.state.callingState === CallingState.JOINED || 
+                call.state.callingState === CallingState.JOINING) {
+                console.log('Call already joined or joining, skipping join attempt');
+                setShow("call");
+                return;
+            }
+            
             await call.join();
             setShow("call");
         } catch (error) {

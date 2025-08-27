@@ -58,39 +58,49 @@ export const CallConnect = ({ meetingId, meetingName, userId, userName, userImag
     }, [userId, userName, userImage, generatedToken]);
 
     const [call, setCall] = useState<Call>();
-        useEffect(() => {
-            if (!client) return;
+    
+    useEffect(() => {
+        if (!client) return;
 
-            const initializeCall = async () => {
-                try {
-                    // Ensure the call exists on Stream's servers
-                    await getOrCreateCall({ meetingId });
-                    
-                    // Now create the client-side call
-                    const _call = client.call("default", meetingId);
-                    
-                    // Start with camera disabled but try to get microphone permission
-                    _call.camera.disable();
-                    
-                    // Don't disable microphone initially - let the user control it
-                    console.log('Call initialized, microphone state:', _call.microphone.enabled);
-                    
-                    setCall(_call);
-                } catch (error) {
-                    console.error('Error initializing call:', error);
-                }
-            };
+        const initializeCall = async () => {
+            try {
+                // Ensure the call exists on Stream's servers
+                await getOrCreateCall({ meetingId });
+                
+                // Now create the client-side call
+                const _call = client.call("default", meetingId);
+                
+                // Start with camera disabled but try to get microphone permission
+                _call.camera.disable();
+                
+                // Don't disable microphone initially - let the user control it
+                console.log('Call initialized, microphone state:', _call.microphone.enabled);
+                
+                setCall(_call);
+            } catch (error) {
+                console.error('Error initializing call:', error);
+            }
+        };
 
+        // Only initialize if we don't already have a call
+        if (!call) {
             initializeCall();
+        }
 
-            return () => {
-                if (call && call.state.callingState !== CallingState.LEFT) {
-                    call.leave();
-                    call.endCall();
-                    setCall(undefined);
-                }
-            };
-        }, [client, meetingId, getOrCreateCall, call]);
+        return () => {
+            // Cleanup will be handled by a separate useEffect
+        };
+    }, [client, meetingId, getOrCreateCall]);
+    
+    // Separate useEffect for cleanup
+    useEffect(() => {
+        return () => {
+            if (call && call.state.callingState !== CallingState.LEFT) {
+                call.leave();
+                call.endCall();
+            }
+        };
+    }, [call]);
 
         if (!client || !call) {
             return (
