@@ -78,10 +78,11 @@ export const DashboardUserButton = () => {
             <DrawerDescription>{data.user.email}</DrawerDescription>
           </DrawerHeader>
           <DrawerFooter>
-            <Button variant="outline" onClick={() => authClient.customer.portal()} className="w-full">
+            {/* Billing temporarily disabled for production */}
+            {/* <Button variant="outline" onClick={() => authClient.customer.portal()} className="w-full">
               <CreditCardIcon className="size-4 mr-2" />
               Billing
-            </Button>
+            </Button> */}
             <Button variant="destructive" onClick={onLogout} className="w-full">
               <LogOutIcon className="size-4 mr-2" />
               Logout
@@ -117,10 +118,11 @@ export const DashboardUserButton = () => {
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => authClient.customer.portal()} className="cursor-pointer flex items-center justify-between">
+        {/* Billing temporarily disabled for production */}
+        {/* <DropdownMenuItem onClick={() => authClient.customer.portal()} className="cursor-pointer flex items-center justify-between">
           Billing
           <CreditCardIcon className="size-4" />
-        </DropdownMenuItem>
+        </DropdownMenuItem> */}
         <DropdownMenuItem
           onClick={onLogout}
           className="cursor-pointer flex items-center justify-between"
