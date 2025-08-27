@@ -86,7 +86,7 @@ export const premiumProcedure = (entity : "meetings" | "agents") =>
 
       return next({ ctx: { ...ctx, customer } });
     } catch (error) {
-      console.log('Polar customer lookup failed, allowing unlimited usage for now');
+      console.log('Polar customer lookup failed, allowing unlimited usage for now', error);
       // If Polar fails, allow unlimited usage for now
       return next({ ctx: { ...ctx, customer: null } });
     }

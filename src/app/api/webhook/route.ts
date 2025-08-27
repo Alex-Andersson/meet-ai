@@ -354,12 +354,12 @@ When you first join the call, introduce yourself briefly with something like "He
 
             const previousMessages = channel.state.messages
               .slice(-5)
-              .filter((msg: any) => msg.user?.id === existingAgent.id || msg.user?.id === existingMeeting.userId);
+              .filter((msg) => msg.user?.id === existingAgent.id || msg.user?.id === existingMeeting.userId);
 
             console.log('Found', previousMessages.length, 'previous messages for context');
 
             // Map previousMessages to ChatCompletionMessageParam format
-            const mappedMessages: ChatCompletionMessageParam[] = previousMessages.map((msg: any) => ({
+            const mappedMessages: ChatCompletionMessageParam[] = previousMessages.map((msg) => ({
                 role: msg.user?.id === existingAgent.id ? "assistant" : "user",
                 content: msg.text || ""
             }));

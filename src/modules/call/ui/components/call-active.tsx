@@ -37,7 +37,7 @@ export const CallActive = ({ onLeave, meetingName, meetingId }: Props) => {
         microphoneState: call.microphone
       });
     }
-  }, [microphone.enabled, call]);
+  }, [microphone.enabled, call, meetingId, meetingName, aiJoined, microphone]);
   
   const handleToggleMicrophone = async () => {
     try {

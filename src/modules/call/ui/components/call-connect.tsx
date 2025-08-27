@@ -3,7 +3,7 @@
 import { LoaderIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTRPC } from "@/trpc/client";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import {
   StreamCall,
   StreamVideo,
@@ -90,7 +90,7 @@ export const CallConnect = ({ meetingId, meetingName, userId, userName, userImag
                     setCall(undefined);
                 }
             };
-        }, [client, meetingId, getOrCreateCall]);
+        }, [client, meetingId, getOrCreateCall, call]);
 
         if (!client || !call) {
             return (
