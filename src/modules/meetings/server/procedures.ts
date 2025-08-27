@@ -237,7 +237,12 @@ export const meetingsRouter = createTRPCRouter({
   triggerAI: protectedProcedure
     .input(z.object({ meetingId: z.string() }))
     .mutation(async ({ input, ctx }) => {
+      console.log('=== TRIGGER AI PROCEDURE CALLED ===');
+      console.log('Meeting ID:', input.meetingId);
+      console.log('User ID:', ctx.auth.user.id);
+      
       try {
+        console.log('Looking for meeting in database...');
         const [existingMeeting] = await db
           .select()
           .from(meetings)
@@ -247,6 +252,16 @@ export const meetingsRouter = createTRPCRouter({
               eq(meetings.userId, ctx.auth.user.id)
             )
           );
+
+        console.log('Meeting found:', existingMeeting ? 'YES' : 'NO');
+        if (existingMeeting) {
+          console.log('Meeting details:', {
+            id: existingMeeting.id,
+            name: existingMeeting.name,
+            status: existingMeeting.status,
+            agentId: existingMeeting.agentId
+          });
+        }
 
         if (!existingMeeting) {
           throw new TRPCError({
@@ -346,9 +361,11 @@ When you first join the call, introduce yourself briefly with something like "He
 
         console.log('Manual AI trigger completed successfully');
 
-        return { success: true, message: 'AI agent connected successfully' };
+        return { success: true, message: 'AI agent connected successfully', agentName: existingAgent.name };
       } catch (error) {
-        console.error('Error triggering AI:', error);
+        console.error('=== ERROR IN TRIGGER AI ===');
+        console.error('Error details:', error);
+        console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace');
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: error instanceof Error ? error.message : 'Failed to connect AI agent',

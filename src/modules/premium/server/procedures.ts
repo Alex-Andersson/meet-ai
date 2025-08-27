@@ -1,26 +1,61 @@
 import { db } from "@/db";
 import { agents, meetings } from "@/db/schema";
 import { eq, count } from "drizzle-orm";
-// import { polarClient } from "@/lib/polar"; // Disabled for production
+import { polarClient } from "@/lib/polar";
 import {
   createTRPCRouter,
   protectedProcedure,
 } from "@/trpc/init";
 
-// Temporarily disable premium features for production
 export const premiumRouter = createTRPCRouter({
     getCurrentSubscription: protectedProcedure.query(async({ ctx }) => {
-        // Return null (no subscription) for now
-        return null;
+        try {
+            const customer = await polarClient.customers.getStateExternal({
+                externalId: ctx.auth.user.id
+            });
+
+            const subscription = customer.activeSubscriptions[0];
+
+            if (!subscription) {
+                return null;
+            }
+
+            const product = await polarClient.products.get({
+                id: subscription.productId
+            });
+
+            return product;
+        } catch (error) {
+            console.log('Customer not found in Polar, returning null subscription');
+            return null;
+        }
     }),
 
     getProducts: protectedProcedure.query(async() => {
-        // Return empty array for now
-        return [];
+        const products = await polarClient.products.list({
+            isArchived: false,
+            isRecurring: true,
+            sorting: ["price_amount"]
+        });
+
+        return products.result.items;
     }),
 
     getFreeUsage: protectedProcedure.query(async({ ctx }) => {
-        // For now, show unlimited usage
+        try {
+            const customer = await polarClient.customers.getStateExternal({
+                externalId: ctx.auth.user.id
+            });
+
+            const subscription = customer.activeSubscriptions[0];
+
+            if (subscription) {
+                return null;
+            }
+        } catch (error) {
+            console.log('Customer not found in Polar, showing free usage');
+        }
+
         const [userMeetings] = await db
             .select({
                 count: count(meetings.id)
@@ -38,9 +73,6 @@ export const premiumRouter = createTRPCRouter({
         return {
             meetingCount: userMeetings.count,
             agentCount: userAgents.count,
-            // Show high limits to simulate unlimited usage
-            meetingsLimit: 999,
-            agentsLimit: 999
         };
     })
 });

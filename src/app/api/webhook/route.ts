@@ -13,7 +13,7 @@ import { agents, meetings } from "@/db/schema";
 import { streamVideo } from "@/lib/stream-video";
 import { inngest } from "@/inngest/client";
 import OpenAI from "openai";
-import { ChatCompletionMessageParam } from "openai/resources/index.mjs";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { generatedAvatarUri } from "@/lib/avatar";
 import { streamChat } from "@/lib/stream-chat";
 
@@ -262,7 +262,7 @@ When you first join the call, introduce yourself briefly with something like "He
             .select()
             .from(meetings)
             .where(eq(meetings.id, channelId))
-            .then(results => results[0]);
+            .then((results: typeof meetings.$inferSelect[]) => results[0]);
 
         console.log('Initial meeting lookup result:', existingMeeting ? {
             id: existingMeeting.id,
@@ -285,7 +285,7 @@ When you first join the call, introduce yourself briefly with something like "He
                 )
                 .limit(5);
 
-            console.log('Found active meetings:', activeMeetings.map(m => ({ 
+            console.log('Found active meetings:', activeMeetings.map((m: typeof meetings.$inferSelect) => ({ 
                 id: m.id, 
                 name: m.name, 
                 status: m.status 
@@ -297,7 +297,7 @@ When you first join the call, introduce yourself briefly with something like "He
                 console.log('Using single active meeting:', existingMeeting.id);
             } else if (activeMeetings.length > 1) {
                 // If multiple meetings, try to find one that matches the channel pattern
-                const possibleMeeting = activeMeetings.find(m => 
+                const possibleMeeting = activeMeetings.find((m: typeof meetings.$inferSelect) => 
                     channelId.includes(m.id) || m.id.includes(channelId.slice(-8))
                 );
                 if (possibleMeeting) {
@@ -315,7 +315,7 @@ When you first join the call, introduce yourself briefly with something like "He
             console.log('No suitable meeting found for channel:', channelId);
             console.log('Available meetings in database:');
             const allMeetings = await db.select().from(meetings).limit(5);
-            console.log(allMeetings.map(m => ({ id: m.id, name: m.name, status: m.status })));
+            console.log(allMeetings.map((m: typeof meetings.$inferSelect) => ({ id: m.id, name: m.name, status: m.status })));
             return NextResponse.json({ error: "No active meeting found" }, { status: 404 });
         }
 
@@ -354,12 +354,12 @@ When you first join the call, introduce yourself briefly with something like "He
 
             const previousMessages = channel.state.messages
               .slice(-5)
-              .filter(msg => msg.user?.id === existingAgent.id || msg.user?.id === existingMeeting.userId);
+              .filter((msg: any) => msg.user?.id === existingAgent.id || msg.user?.id === existingMeeting.userId);
 
             console.log('Found', previousMessages.length, 'previous messages for context');
 
             // Map previousMessages to ChatCompletionMessageParam format
-            const mappedMessages: ChatCompletionMessageParam[] = previousMessages.map(msg => ({
+            const mappedMessages: ChatCompletionMessageParam[] = previousMessages.map((msg: any) => ({
                 role: msg.user?.id === existingAgent.id ? "assistant" : "user",
                 content: msg.text || ""
             }));

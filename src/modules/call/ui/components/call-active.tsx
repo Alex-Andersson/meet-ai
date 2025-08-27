@@ -22,6 +22,10 @@ export const CallActive = ({ onLeave, meetingName, meetingId }: Props) => {
   
   // Enhanced debugging
   useEffect(() => {
+    console.log('=== CALL ACTIVE DEBUG ===');
+    console.log('Meeting ID passed to component:', meetingId);
+    console.log('Meeting Name:', meetingName);
+    console.log('AI Joined state:', aiJoined);
     console.log('=== MICROPHONE DEBUG ===');
     console.log('Microphone enabled:', microphone.enabled);
     console.log('Call object:', call);
@@ -80,18 +84,35 @@ export const CallActive = ({ onLeave, meetingName, meetingId }: Props) => {
   
   const { mutateAsync: triggerAI, isPending } = useMutation(
     trpc.meetings.triggerAI.mutationOptions({
-      onSuccess: () => {
+      onSuccess: (data) => {
+        console.log('AI trigger SUCCESS:', data);
         setAiJoined(true);
+        alert('AI agent connected successfully!');
       },
       onError: (error) => {
-        console.error('Error triggering AI:', error);
+        console.error('AI trigger ERROR:', error);
+        alert(`Failed to connect AI: ${error.message}`);
       }
     })
   );
 
   const handleJoinAI = async () => {
-    if (!meetingId) return;
-    await triggerAI({ meetingId });
+    console.log('=== JOIN AI BUTTON CLICKED ===');
+    console.log('Meeting ID:', meetingId);
+    
+    if (!meetingId) {
+      console.error('No meeting ID available');
+      alert('No meeting ID available');
+      return;
+    }
+    
+    try {
+      console.log('Calling triggerAI mutation...');
+      const result = await triggerAI({ meetingId });
+      console.log('TriggerAI result:', result);
+    } catch (error) {
+      console.error('Error in handleJoinAI:', error);
+    }
   };
 
   return (

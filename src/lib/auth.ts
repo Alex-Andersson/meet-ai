@@ -16,7 +16,7 @@ export const auth = betterAuth({
     plugins:[
         polar({
             client: polarClient,
-            createCustomerOnSignUp: true,
+            createCustomerOnSignUp: false, // Disable automatic customer creation
             use: [
                 checkout({
                     authenticatedUsersOnly: true,
