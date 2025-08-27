@@ -5,7 +5,6 @@ import {
   CallTranscriptionReadyEvent,
   CallSessionParticipantLeftEvent,
   CallRecordingReadyEvent,
-  CallSessionEndedEvent,
   CallSessionStartedEvent,
   MessageNewEvent,
 } from "@stream-io/node-sdk";
@@ -47,7 +46,7 @@ export async function POST(req: NextRequest) {
     let payload: unknown;
     try {
         payload = JSON.parse(body) as Record<string, unknown>;
-    } catch (error) {
+    } catch {
         return NextResponse.json({ error: "Invalid JSON payload" }, { status: 400 });
     }   
 
@@ -138,15 +137,15 @@ export async function POST(req: NextRequest) {
                 console.log('OpenAI session updated');
             });
             
-            realtimeClient.on('conversation.item.created', (event: any) => {
+            realtimeClient.on('conversation.item.created', (event: unknown) => {
                 console.log('OpenAI conversation item created:', event);
             });
             
-            realtimeClient.on('response.audio_transcript.delta', (event: any) => {
-                console.log('OpenAI audio transcript:', event.delta);
+            realtimeClient.on('response.audio_transcript.delta', (event: unknown) => {
+                console.log('OpenAI audio transcript:', event);
             });
             
-            realtimeClient.on('error', (event: any) => {
+            realtimeClient.on('error', (event: unknown) => {
                 console.error('OpenAI error:', event);
             });
             

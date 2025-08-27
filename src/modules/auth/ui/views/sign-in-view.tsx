@@ -118,7 +118,7 @@ export const SignInView = () => {
                     after:flex after:items-center after:border-t"
                 >
                   <span className="bg-card text-muted-foreground relative z-10 px-2">
-                    Don't have an account?
+                    Don&apos;t have an account?
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-4">

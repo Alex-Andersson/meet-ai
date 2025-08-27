@@ -17,7 +17,7 @@ export const DashboardTrial = () => {
             <div className="p-3 flex flex-col gap-y-4">
                 <div className="flex items-center gap-2">
                     <RocketIcon className="size-4" />
-                    <h3 className="font-semibold">You're on a free plan</h3>
+                    <h3 className="font-semibold">You&apos;re on a free plan</h3>
                 </div>
                 <div className="flex flex-col gap-y-2">
                     <p className="text-sm">

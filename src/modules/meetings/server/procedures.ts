@@ -3,7 +3,7 @@ import JSONL from "jsonl-parse-stringify";
 import { createTRPCRouter, premiumProcedure, protectedProcedure } from "@/trpc/init";
 import { meetings, agents, user } from "@/db/schema";
 import { z } from "zod";
-import { and, count, desc, eq, getTableColumns, ilike, inArray, is, sql } from "drizzle-orm";
+import { and, count, desc, eq, getTableColumns, ilike, inArray, sql } from "drizzle-orm";
 import { DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE } from "@/constants";
 import { TRPCError } from "@trpc/server";
 import { meetingsInsertSchema, meetingsUpdateSchema } from "../schemas";
@@ -205,7 +205,7 @@ export const meetingsRouter = createTRPCRouter({
         try {
           // Try to get existing call first
           await call.get();
-        } catch (error) {
+        } catch {
           // If call doesn't exist, create it
           await call.create({
             data: {
@@ -305,15 +305,15 @@ export const meetingsRouter = createTRPCRouter({
           console.log('Manual trigger: OpenAI session updated');
         });
         
-        realtimeClient.on('conversation.item.created', (event: any) => {
+        realtimeClient.on('conversation.item.created', (event: unknown) => {
           console.log('Manual trigger: OpenAI conversation item created:', event);
         });
         
-        realtimeClient.on('response.audio_transcript.delta', (event: any) => {
-          console.log('Manual trigger: OpenAI audio transcript:', event.delta);
+        realtimeClient.on('response.audio_transcript.delta', (event: unknown) => {
+          console.log('Manual trigger: OpenAI audio transcript:', event);
         });
         
-        realtimeClient.on('error', (event: any) => {
+        realtimeClient.on('error', (event: unknown) => {
           console.error('Manual trigger: OpenAI error:', event);
         });
 
