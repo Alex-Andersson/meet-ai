@@ -87,8 +87,7 @@
     "stream-chat": "^9.17.0",
     "stream-chat-react": "^13.5.1",
     "tailwind-merge": "^3.3.1",
-    "vaul": "^1.1.2",
-    "zod": "^3.25.76"
+    "vaul": "^1.1.2"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
@@ -107,5 +106,8 @@
     "tsx": "^4.20.4",
     "tw-animate-css": "^1.3.7",
     "typescript": "^5"
+  },
+  "peerDependencies": {
+    "zod": "3.25.76"
   }
 }
