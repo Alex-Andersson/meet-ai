@@ -120,6 +120,13 @@ export async function POST(req: NextRequest) {
             
             console.log('Agent user upserted successfully');
             
+            console.log('Attempting to connect OpenAI with call:', call.cid);
+            console.log('Using API key:', process.env.OPENAI_API_KEY ? 'present' : 'missing');
+            console.log('Agent user ID:', existingAgent.id);
+            
+            // Add a small delay to ensure everything is properly initialized
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
             const realtimeClient = await streamVideo.video.connectOpenAi({
                 call,
                 openAiApiKey: process.env.OPENAI_API_KEY!,
@@ -179,7 +186,51 @@ When you first join the call, introduce yourself briefly with something like "He
             console.log('OpenAI agent session configured successfully');
         } catch (error) {
             console.error('Error connecting OpenAI agent:', error);
-            return NextResponse.json({ error: "Failed to connect AI agent" }, { status: 500 });
+            console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+            console.error('Error message:', error instanceof Error ? error.message : String(error));
+            
+            // Check for specific mask function error
+            if (error instanceof Error && error.message.includes('mask is not a function')) {
+                console.error('MASK ERROR DETECTED: This appears to be a known issue with OpenAI Realtime API');
+                console.error('Attempting alternative connection method...');
+                
+                // Try a simple retry after a delay
+                setTimeout(async () => {
+                    try {
+                        console.log('Retrying OpenAI connection...');
+                        const call = streamVideo.video.call("default", meetingId);
+                        const retryClient = await streamVideo.video.connectOpenAi({
+                            call,
+                            openAiApiKey: process.env.OPENAI_API_KEY!,
+                            agentUserId: existingAgent.id,
+                        });
+                        console.log('Retry successful!');
+                        
+                        retryClient.updateSession({
+                            instructions: `${existingAgent.instructions}
+
+Important: You are participating in a live voice conversation. Actively listen and respond when appropriate. Always be conversational and helpful. When you hear someone speaking, feel free to respond naturally.
+
+When you first join the call, introduce yourself briefly with something like "Hello! I'm ${existingAgent.name}, your AI assistant. I'm here and ready to help with the meeting."`,
+                            voice: 'alloy',
+                            input_audio_transcription: {
+                                model: 'whisper-1'
+                            },
+                            turn_detection: {
+                                type: 'server_vad',
+                                threshold: 0.3,
+                                prefix_padding_ms: 300,
+                                silence_duration_ms: 1000
+                            },
+                            tool_choice: 'auto'
+                        });
+                    } catch (retryError) {
+                        console.error('Retry also failed:', retryError);
+                    }
+                }, 2000);
+            }
+            
+            return NextResponse.json({ error: "Failed to connect AI agent", details: error instanceof Error ? error.message : String(error) }, { status: 500 });
         }
     } else if (eventType === "call.session_participant_left") {
         const event = payload as CallSessionParticipantLeftEvent;

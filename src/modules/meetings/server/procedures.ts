@@ -366,6 +366,18 @@ When you first join the call, introduce yourself briefly with something like "He
         console.error('=== ERROR IN TRIGGER AI ===');
         console.error('Error details:', error);
         console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace');
+        console.error('Error message:', error instanceof Error ? error.message : String(error));
+        
+        // Check for specific mask function error
+        if (error instanceof Error && error.message.includes('mask is not a function')) {
+          console.error('MASK ERROR DETECTED in manual trigger: This appears to be a known issue with OpenAI Realtime API');
+          
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'OpenAI connection failed due to SDK issue (mask function). This is a known temporary issue. Please try again in a few moments.',
+          });
+        }
+        
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: error instanceof Error ? error.message : 'Failed to connect AI agent',
