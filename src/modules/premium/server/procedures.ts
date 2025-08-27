@@ -1,63 +1,36 @@
 import { db } from "@/db";
 import { agents, meetings } from "@/db/schema";
 import { eq, count } from "drizzle-orm";
-import { polarClient } from "@/lib/polar";
+// import { polarClient } from "@/lib/polar"; // Disabled for production
 import {
   createTRPCRouter,
   protectedProcedure,
 } from "@/trpc/init";
 
-
+// Temporarily disable premium features for production
 export const premiumRouter = createTRPCRouter({
     getCurrentSubscription: protectedProcedure.query(async({ ctx }) => {
-        const customer = await polarClient.customers.getStateExternal({
-            externalId: ctx.auth.user.id
-        });
-
-        const subscription = customer.activeSubscriptions[0];
-
-        if (!subscription) {
-            return null;
-        }
-
-        const product = await polarClient.products.get({
-            id: subscription.productId
-        });
-
-        return product;
+        // Return null (no subscription) for now
+        return null;
     }),
 
     getProducts: protectedProcedure.query(async() => {
-        const products = await polarClient.products.list({
-            isArchived: false,
-            isRecurring: true,
-            sorting: ["price_amount"]
-        });
-
-        return products.result.items;
+        // Return empty array for now
+        return [];
     }),
 
     getFreeUsage: protectedProcedure.query(async({ ctx }) => {
-        const customer = await polarClient.customers.getStateExternal({
-            externalId: ctx.auth.user.id
-        });
-
-        const subscription = customer.activeSubscriptions[0];
-
-        if (subscription) {
-            return null;
-        }
-
+        // For now, show unlimited usage
         const [userMeetings] = await db
             .select({
-                count: count(meetings.id),
+                count: count(meetings.id)
             })
             .from(meetings)
             .where(eq(meetings.userId, ctx.auth.user.id));
-        
+
         const [userAgents] = await db
             .select({
-                count: count(agents.id),
+                count: count(agents.id)
             })
             .from(agents)
             .where(eq(agents.userId, ctx.auth.user.id));
@@ -65,6 +38,9 @@ export const premiumRouter = createTRPCRouter({
         return {
             meetingCount: userMeetings.count,
             agentCount: userAgents.count,
+            // Show high limits to simulate unlimited usage
+            meetingsLimit: 999,
+            agentsLimit: 999
         };
     })
 });
