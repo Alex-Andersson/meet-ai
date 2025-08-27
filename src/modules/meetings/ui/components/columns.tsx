@@ -13,16 +13,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { MeetingGetMany } from "../../types";
 import { format } from "date-fns";
-import humanizeDuration from "humanize-duration";
-import { cn } from "@/lib/utils";
+import { cn, formatDuration } from "@/lib/utils";
 
-function formatDuration(duration: number) {
-  return humanizeDuration(duration * 1000, {
-    units: ["h", "m", "s"],
-    round: true,
-    largest: 1,
-  });
-}
 
 const statusIconMap = {
   upcoming: ClockArrowUpIcon,

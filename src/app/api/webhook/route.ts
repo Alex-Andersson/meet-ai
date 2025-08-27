@@ -7,11 +7,20 @@ import {
   CallRecordingReadyEvent,
   CallSessionEndedEvent,
   CallSessionStartedEvent,
+  MessageNewEvent,
 } from "@stream-io/node-sdk";
 import { db } from "@/db";
 import { agents, meetings } from "@/db/schema";
 import { streamVideo } from "@/lib/stream-video";
 import { inngest } from "@/inngest/client";
+import OpenAI from "openai";
+import { ChatCompletionMessageParam } from "openai/resources/index.mjs";
+import { generatedAvatarUri } from "@/lib/avatar";
+import { streamChat } from "@/lib/stream-chat";
+
+const openaiClient = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY, 
+});
 
 function verifySignatureWithSDK(body: string, signature: string): boolean {
     return streamVideo.verifyWebhook(body, signature);
@@ -44,6 +53,7 @@ export async function POST(req: NextRequest) {
 
     const eventType = (payload as Record<string, string>)?.type;
     console.log('Webhook received event:', eventType);
+    console.log('Full payload:', JSON.stringify(payload, null, 2));
     
     if (eventType === "call.session_started") {
         console.log('Processing call.session_started event');
@@ -233,6 +243,180 @@ When you first join the call, introduce yourself briefly with something like "He
             .where(eq(meetings.id, meetingId))
             .returning();
 
+    } else if (eventType === "message.new") {
+        console.log('Processing message.new event');
+        const event = payload as MessageNewEvent;
+
+        const userId = event.user?.id;
+        const channelId = event.channel_id;
+        const text = event.message?.text;
+
+        console.log('Message details:', { userId, channelId, text });
+
+        if (!userId || !channelId || !text) {
+            console.log('Missing required fields in message.new event');
+            return NextResponse.json({ error: "Missing userId, channelId, or text in message.new event" }, { status: 400 });
+        }
+
+        // First try to find meeting by exact channelId match
+        let existingMeeting = await db
+            .select()
+            .from(meetings)
+            .where(eq(meetings.id, channelId))
+            .then(results => results[0]);
+
+        console.log('Initial meeting lookup result:', existingMeeting ? {
+            id: existingMeeting.id,
+            name: existingMeeting.name,
+            status: existingMeeting.status
+        } : 'No match');
+
+        // If we found a completed meeting, or no meeting at all, look for active alternatives
+        if (!existingMeeting || existingMeeting.status === "completed") {
+            console.log('Looking for active/upcoming meetings as alternative...');
+            
+            const activeMeetings = await db
+                .select()
+                .from(meetings)
+                .where(
+                    and(
+                        not(eq(meetings.status, "completed")),
+                        not(eq(meetings.status, "cancelled"))
+                    )
+                )
+                .limit(5);
+
+            console.log('Found active meetings:', activeMeetings.map(m => ({ 
+                id: m.id, 
+                name: m.name, 
+                status: m.status 
+            })));
+
+            // If we have exactly one active meeting, use it
+            if (activeMeetings.length === 1) {
+                existingMeeting = activeMeetings[0];
+                console.log('Using single active meeting:', existingMeeting.id);
+            } else if (activeMeetings.length > 1) {
+                // If multiple meetings, try to find one that matches the channel pattern
+                const possibleMeeting = activeMeetings.find(m => 
+                    channelId.includes(m.id) || m.id.includes(channelId.slice(-8))
+                );
+                if (possibleMeeting) {
+                    existingMeeting = possibleMeeting;
+                    console.log('Using pattern-matched meeting:', existingMeeting.id);
+                } else {
+                    // Use the most recent active meeting
+                    existingMeeting = activeMeetings[0];
+                    console.log('Using most recent active meeting:', existingMeeting.id);
+                }
+            }
+        }
+
+        if (!existingMeeting) {
+            console.log('No suitable meeting found for channel:', channelId);
+            console.log('Available meetings in database:');
+            const allMeetings = await db.select().from(meetings).limit(5);
+            console.log(allMeetings.map(m => ({ id: m.id, name: m.name, status: m.status })));
+            return NextResponse.json({ error: "No active meeting found" }, { status: 404 });
+        }
+
+        console.log('Using meeting:', {
+            id: existingMeeting.id,
+            name: existingMeeting.name,
+            status: existingMeeting.status,
+            agentId: existingMeeting.agentId
+        });
+
+        const [existingAgent] = await db
+            .select()
+            .from(agents)
+            .where(eq(agents.id, existingMeeting.agentId));
+
+        if (!existingAgent) {
+            console.log('Agent not found for meeting:', channelId);
+            return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+        }
+
+        console.log('Agent found:', existingAgent.name, 'Agent ID:', existingAgent.id);
+        console.log('User ID from message:', userId);
+
+        if (userId === existingAgent.id) {
+            console.log('Message from agent itself, ignoring to prevent loop.');
+            return NextResponse.json({ status: "ok" });
+        }
+
+        console.log('Processing message from user, generating AI response...');
+
+        const instructions = existingAgent.instructions;
+
+        try {
+            const channel = streamChat.channel("messaging", channelId);
+            await channel.watch();
+
+            const previousMessages = channel.state.messages
+              .slice(-5)
+              .filter(msg => msg.user?.id === existingAgent.id || msg.user?.id === existingMeeting.userId);
+
+            console.log('Found', previousMessages.length, 'previous messages for context');
+
+            // Map previousMessages to ChatCompletionMessageParam format
+            const mappedMessages: ChatCompletionMessageParam[] = previousMessages.map(msg => ({
+                role: msg.user?.id === existingAgent.id ? "assistant" : "user",
+                content: msg.text || ""
+            }));
+
+            console.log('Calling OpenAI with', mappedMessages.length + 1, 'messages...');
+
+            const gptResponse = await openaiClient.chat.completions.create({
+                model: "gpt-4",
+                messages: [
+                    { role: "system", content: instructions },
+                    ...mappedMessages,
+                    { role: "user", content: text },
+                ]
+            });
+
+            const gptResponseText = gptResponse.choices[0].message.content;
+
+            if (!gptResponseText) {
+                console.error('OpenAI response text is empty');
+                return NextResponse.json({ error: "Failed to get response from OpenAI" }, { status: 500 });
+            }
+
+            console.log('OpenAI response generated:', gptResponseText.substring(0, 100) + '...');
+
+            const avatarUrl = generatedAvatarUri({
+                seed: existingAgent.name,
+                variant: "botttsNeutral",
+            });
+
+            // Ensure agent user exists in Stream Chat
+            await streamChat.upsertUsers([{
+                id: existingAgent.id,
+                name: existingAgent.name,
+                image: avatarUrl,
+            }]);
+
+            console.log('Sending message to channel as agent...');
+
+            await channel.sendMessage({
+                text: gptResponseText,
+                user: {
+                    id: existingAgent.id,
+                    name: existingAgent.name,
+                    image: avatarUrl,
+                }
+            });
+
+            console.log('Message sent successfully');
+
+        } catch (error) {
+            console.error('Error processing message.new event:', error);
+            return NextResponse.json({ error: "Failed to process message" }, { status: 500 });
+        }
+    } else {
+        console.log('Unhandled event type:', eventType);
+        console.log('Event payload:', JSON.stringify(payload, null, 2));
     }
 
     return NextResponse.json({ status: "ok" });

@@ -43,8 +43,8 @@ const AgentsListHeader = () => {
             </Button>
           )}
         </div>
-        </ScrollArea>
         <ScrollBar orientation="horizontal" />
+        </ScrollArea>
       </div>
     </>
   );
