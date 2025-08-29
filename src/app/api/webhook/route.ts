@@ -114,7 +114,7 @@ export async function POST(req: NextRequest) {
         }
 
         // Clean up AI connection tracking when call ends
-        cleanupConnection(meetingId);
+        await cleanupConnection(meetingId);
 
         await db
             .update(meetings)

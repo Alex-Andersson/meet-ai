@@ -15,7 +15,8 @@ import {
   getConnectionState, 
   markConnectionInProgress, 
   markConnectionCompleted, 
-  cleanupConnection 
+  cleanupConnection,
+  cleanupOldConnections
 } from "@/lib/ai-connection-tracker";
 
 export const meetingsRouter = createTRPCRouter({
@@ -247,14 +248,14 @@ export const meetingsRouter = createTRPCRouter({
       console.log('Meeting ID:', input.meetingId);
       console.log('User ID:', ctx.auth.user.id);
       
-      // FIRST: Check global tracking to prevent any duplicates
-      const existingConnection = getConnectionState(input.meetingId);
+      // FIRST: Check database tracking to prevent any duplicates
+      const existingConnection = await getConnectionState(input.meetingId);
       if (existingConnection) {
         console.log('DUPLICATE PREVENTED: AI connection already exists for meeting:', input.meetingId);
         console.log('Existing connection details:', existingConnection);
         
         // If connection is in progress, reject immediately
-        if (existingConnection.inProgress) {
+        if (existingConnection.isInProgress) {
           throw new TRPCError({
             code: 'CONFLICT',
             message: 'AI connection is already in progress for this meeting. Please wait.',
@@ -309,8 +310,16 @@ export const meetingsRouter = createTRPCRouter({
           });
         }
 
-        // MARK CONNECTION AS IN PROGRESS to prevent other triggers
-        markConnectionInProgress(input.meetingId, existingAgent.id);
+        // ATOMICALLY mark connection as in progress to prevent other triggers
+        const lockAcquired = await markConnectionInProgress(input.meetingId, existingAgent.id);
+        
+        if (!lockAcquired) {
+          console.log('Failed to acquire connection lock - another process is already connecting');
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: 'Another AI connection is already in progress for this meeting.',
+          });
+        }
 
         const call = streamVideo.video.call("default", input.meetingId);
         
@@ -326,7 +335,7 @@ export const meetingsRouter = createTRPCRouter({
             if (agentAlreadyInCall) {
                 console.log('Agent already in call participants, canceling connection');
                 // Clean up the tracking since agent is already connected
-                cleanupConnection(input.meetingId);
+                await cleanupConnection(input.meetingId);
                 throw new TRPCError({
                   code: 'CONFLICT',
                   message: 'AI agent is already connected to this call',
@@ -390,7 +399,7 @@ export const meetingsRouter = createTRPCRouter({
               
               if (retryCount >= maxRetries) {
                 // Clean up tracking on failure
-                cleanupConnection(input.meetingId);
+                await cleanupConnection(input.meetingId);
                 
                 throw new TRPCError({
                   code: 'INTERNAL_SERVER_ERROR',
@@ -402,7 +411,7 @@ export const meetingsRouter = createTRPCRouter({
               continue;
             } else {
               // For other errors, clean up and fail immediately
-              cleanupConnection(input.meetingId);
+              await cleanupConnection(input.meetingId);
               throw error;
             }
           }
@@ -410,7 +419,7 @@ export const meetingsRouter = createTRPCRouter({
         
         if (!realtimeClient) {
           // Clean up tracking on failure
-          cleanupConnection(input.meetingId);
+          await cleanupConnection(input.meetingId);
           
           throw new TRPCError({
             code: 'INTERNAL_SERVER_ERROR',
@@ -419,7 +428,7 @@ export const meetingsRouter = createTRPCRouter({
         }
 
         // CONNECTION SUCCESSFUL - Mark as completed (not in progress)
-        markConnectionCompleted(input.meetingId, existingAgent.id);
+        await markConnectionCompleted(input.meetingId);
 
         // Add event listeners for debugging
         realtimeClient.on('session.created', () => {
@@ -479,7 +488,7 @@ When you first join the call, introduce yourself briefly with something like "He
         console.error('Error message:', error instanceof Error ? error.message : String(error));
         
         // ALWAYS clean up tracking on any error
-        cleanupConnection(input.meetingId);
+        await cleanupConnection(input.meetingId);
         console.log('Cleaned up global tracking due to error for meeting:', input.meetingId);
         
         // Check for specific mask function error
@@ -503,6 +512,22 @@ When you first join the call, introduce yourself briefly with something like "He
         });
       }
     }),
+
+  // Debug procedure to clean up old AI connection locks
+  cleanupAILocks: protectedProcedure
+    .mutation(async () => {
+      try {
+        await cleanupOldConnections();
+        return { success: true, message: 'Old AI connection locks cleaned up' };
+      } catch (error) {
+        console.error('Error cleaning up AI locks:', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to clean up AI locks',
+        });
+      }
+    }),
+
   update: protectedProcedure
     .input(meetingsUpdateSchema)
     .mutation(async ({ input, ctx }) => {

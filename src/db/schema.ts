@@ -108,3 +108,12 @@ export const meetings = pgTable("meetings", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// AI Connection Locks table to prevent duplicate connections
+export const aiConnectionLocks = pgTable("ai_connection_locks", {
+  meetingId: text("meeting_id").primaryKey(),
+  agentId: text("agent_id").notNull(),
+  isInProgress: boolean("is_in_progress").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
