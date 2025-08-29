@@ -18,6 +18,7 @@ import { generatedAvatarUri } from "@/lib/avatar";
 import { streamChat } from "@/lib/stream-chat";
 import { cleanupConnection } from "@/lib/ai-connection-tracker";
 import { AISingletonGuard } from "@/lib/ai-singleton-guard";
+import { EmergencyAIGuard } from "@/lib/emergency-ai-guard";
 
 const openaiClient = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY, 
@@ -117,7 +118,8 @@ export async function POST(req: NextRequest) {
         // Clean up AI connection tracking when call ends
         await cleanupConnection(meetingId);
         await AISingletonGuard.cleanup(meetingId);
-        console.log('Cleaned up AI connections and singleton guard for ended call:', meetingId);
+        EmergencyAIGuard.forceCleanup(meetingId);
+        console.log('🧹 CLEANED UP ALL AI GUARDS for ended call:', meetingId);
 
         await db
             .update(meetings)

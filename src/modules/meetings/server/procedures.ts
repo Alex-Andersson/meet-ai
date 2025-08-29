@@ -19,6 +19,7 @@ import {
   cleanupOldConnections
 } from "@/lib/ai-connection-tracker";
 import { AISingletonGuard } from "@/lib/ai-singleton-guard";
+import { EmergencyAIGuard } from "@/lib/emergency-ai-guard";
 
 export const meetingsRouter = createTRPCRouter({
   generateChatToken: protectedProcedure.mutation(async ({ ctx }) => {
@@ -247,18 +248,29 @@ export const meetingsRouter = createTRPCRouter({
     .mutation(async ({ input, ctx }) => {
       const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       
-      console.log('=== TRIGGER AI PROCEDURE CALLED ===');
+      console.log('🚨 === EMERGENCY AI TRIGGER CALLED ===');
       console.log('Request ID:', requestId);
       console.log('Meeting ID:', input.meetingId);
       console.log('User ID:', ctx.auth.user.id);
       console.log('Timestamp:', new Date().toISOString());
-      console.log('Call stack preview:', new Error().stack?.split('\n').slice(1, 5).join('\n'));
+      console.log('Active connections before check:', EmergencyAIGuard.getActiveConnections());
       
+      // STEP 0: EMERGENCY GUARD - Absolute first line of defense
+      if (!EmergencyAIGuard.attemptConnection(input.meetingId)) {
+        console.log('🚨 EMERGENCY GUARD BLOCKED REQUEST');
+        console.log('Request ID:', requestId);
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'AI connection blocked by emergency guard. Only one AI per meeting allowed.',
+        });
+      }
+      
+      console.log('✅ EMERGENCY GUARD PASSED - Proceeding with connection');
+      console.log('Request ID:', requestId);
+
       // STEP 1: Use AI Singleton Guard for absolute protection
       console.log('=== AI SINGLETON GUARD CHECK ===');
-      console.log('Request ID:', requestId);
-      
-      if (AISingletonGuard.isLocked(input.meetingId)) {
+      console.log('Request ID:', requestId);      if (AISingletonGuard.isLocked(input.meetingId)) {
         console.log('SINGLETON GUARD: Meeting already locked in memory');
         throw new TRPCError({
           code: 'CONFLICT',
@@ -516,12 +528,7 @@ When you first join the call, introduce yourself briefly with something like "He
           input_audio_transcription: {
             model: 'whisper-1'
           },
-          turn_detection: {
-            type: 'server_vad',
-            threshold: 0.5, // Increased from 0.3 to make it less sensitive
-            prefix_padding_ms: 300,
-            silence_duration_ms: 2000 // Increased from 1000ms to reduce false triggers
-          },
+          turn_detection: null, // DISABLE automatic turn detection to prevent voice-triggered connections
           tool_choice: 'auto'
         });
         
@@ -544,10 +551,12 @@ When you first join the call, introduce yourself briefly with something like "He
         console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace');
         console.error('Error message:', error instanceof Error ? error.message : String(error));
         
-        // ALWAYS clean up tracking on any error
+        // ALWAYS clean up ALL tracking on any error
         await cleanupConnection(input.meetingId);
         await AISingletonGuard.release(input.meetingId);
-        console.log('Cleaned up tracking and singleton guard due to error for meeting:', input.meetingId);
+        EmergencyAIGuard.forceCleanup(input.meetingId);
+        console.log('🧹 CLEANED UP ALL GUARDS due to error for meeting:', input.meetingId);
+        console.log('Request ID:', requestId);
         
         // Check for specific mask function error
         if (error instanceof Error && error.message.includes('mask is not a function')) {
@@ -569,6 +578,57 @@ When you first join the call, introduce yourself briefly with something like "He
           message: error instanceof Error ? error.message : 'Failed to connect AI agent',
         });
       }
+    }),
+
+  // Debug procedure to check all AI guards
+  debugAIGuards: protectedProcedure
+    .input(z.object({ meetingId: z.string() }))
+    .mutation(async ({ input }) => {
+      console.log('=== AI GUARDS DEBUG ===');
+      console.log('Meeting ID:', input.meetingId);
+      
+      // Check emergency guard
+      const isEmergencyActive = EmergencyAIGuard.isConnectionActive(input.meetingId);
+      const allEmergencyConnections = EmergencyAIGuard.getActiveConnections();
+      
+      // Check singleton guard
+      const isSingletonLocked = AISingletonGuard.isLocked(input.meetingId);
+      
+      // Check database
+      const dbConnection = await getConnectionState(input.meetingId);
+      
+      const status = {
+        meetingId: input.meetingId,
+        emergencyGuard: {
+          isActive: isEmergencyActive,
+          allActiveConnections: allEmergencyConnections
+        },
+        singletonGuard: {
+          isLocked: isSingletonLocked
+        },
+        database: {
+          hasConnection: !!dbConnection,
+          connection: dbConnection
+        }
+      };
+      
+      console.log('AI Guards Status:', JSON.stringify(status, null, 2));
+      return status;
+    }),
+
+  // Force cleanup all AI guards
+  forceCleanupAI: protectedProcedure
+    .input(z.object({ meetingId: z.string() }))
+    .mutation(async ({ input }) => {
+      console.log('🚨 FORCE CLEANUP ALL AI GUARDS for meeting:', input.meetingId);
+      
+      await cleanupConnection(input.meetingId);
+      await AISingletonGuard.cleanup(input.meetingId);
+      EmergencyAIGuard.forceCleanup(input.meetingId);
+      
+      console.log('✅ All AI guards cleaned up for meeting:', input.meetingId);
+      
+      return { success: true, message: 'All AI guards cleaned up successfully' };
     }),
 
   // Debug procedure to clean up old AI connection locks
