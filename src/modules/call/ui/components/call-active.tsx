@@ -82,15 +82,20 @@ export const CallActive = ({ onLeave, meetingName, meetingId }: Props) => {
     }
   };
   
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [lastClickTime, setLastClickTime] = useState(0);
+  
   const { mutateAsync: triggerAI, isPending } = useMutation(
     trpc.meetings.triggerAI.mutationOptions({
       onSuccess: (data) => {
         console.log('AI trigger SUCCESS:', data);
         setAiJoined(true);
+        setIsConnecting(false);
         alert('AI agent connected successfully!');
       },
       onError: (error) => {
         console.error('AI trigger ERROR:', error);
+        setIsConnecting(false);
         alert(`Failed to connect AI: ${error.message}`);
       }
     })
@@ -101,14 +106,23 @@ export const CallActive = ({ onLeave, meetingName, meetingId }: Props) => {
     console.log('Meeting ID:', meetingId);
     console.log('Current aiJoined state:', aiJoined);
     console.log('Current isPending state:', isPending);
+    console.log('Current isConnecting state:', isConnecting);
     
-    // Double-check state to prevent multiple calls
+    // Rate limiting: prevent clicks closer than 5 seconds apart
+    const now = Date.now();
+    if (now - lastClickTime < 5000) {
+      console.log('Click too soon after previous attempt, ignoring');
+      return;
+    }
+    setLastClickTime(now);
+    
+    // Triple-check state to prevent multiple calls
     if (aiJoined) {
       console.log('AI already joined, ignoring click');
       return;
     }
     
-    if (isPending) {
+    if (isPending || isConnecting) {
       console.log('Request already in progress, ignoring click');
       return;
     }
@@ -120,11 +134,13 @@ export const CallActive = ({ onLeave, meetingName, meetingId }: Props) => {
     }
     
     try {
+      setIsConnecting(true);
       console.log('Calling triggerAI mutation...');
       const result = await triggerAI({ meetingId });
       console.log('TriggerAI result:', result);
     } catch (error) {
       console.error('Error in handleJoinAI:', error);
+      setIsConnecting(false);
     }
   };
 
@@ -163,7 +179,7 @@ export const CallActive = ({ onLeave, meetingName, meetingId }: Props) => {
               variant={aiJoined ? "secondary" : "default"}
               size="sm"
               onClick={handleJoinAI}
-              disabled={isPending || aiJoined}
+              disabled={isPending || aiJoined || isConnecting}
             >
               {aiJoined ? (
                 <>
@@ -173,7 +189,7 @@ export const CallActive = ({ onLeave, meetingName, meetingId }: Props) => {
               ) : (
                 <>
                   <BotIcon className="w-4 h-4 mr-2" />
-                  {isPending ? "Joining..." : "Join AI"}
+                  {isPending || isConnecting ? "Joining..." : "Join AI"}
                 </>
               )}
             </Button>

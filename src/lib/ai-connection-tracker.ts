@@ -12,6 +12,32 @@ interface AIConnectionState {
     createdAt: Date;
 }
 
+// Track recent attempts to prevent rapid-fire requests (in-memory rate limiting)
+const recentAttempts = new Map<string, number>();
+
+// Check if a request is too soon after a previous attempt (rate limiting)
+export const checkRateLimit = (meetingId: string): boolean => {
+    const now = Date.now();
+    const lastAttempt = recentAttempts.get(meetingId);
+    
+    // Require at least 5 seconds between attempts
+    if (lastAttempt && (now - lastAttempt) < 5000) {
+        console.log('Rate limit hit for meeting:', meetingId, '- too soon after previous attempt');
+        return false;
+    }
+    
+    recentAttempts.set(meetingId, now);
+    
+    // Clean up old attempts (older than 30 seconds)
+    for (const [id, timestamp] of recentAttempts.entries()) {
+        if (now - timestamp > 30000) {
+            recentAttempts.delete(id);
+        }
+    }
+    
+    return true;
+};
+
 // Check if there's an existing connection for a meeting
 export const getConnectionState = async (meetingId: string): Promise<AIConnectionState | null> => {
     try {
@@ -37,6 +63,12 @@ export const getConnectionState = async (meetingId: string): Promise<AIConnectio
 
 // Atomically mark a connection as in progress (prevents duplicates)
 export const markConnectionInProgress = async (meetingId: string, agentId: string): Promise<boolean> => {
+    // Rate limiting check
+    if (!checkRateLimit(meetingId)) {
+        console.log('AI connection blocked by rate limiting for meeting:', meetingId);
+        return false;
+    }
+
     try {
         console.log('Attempting to mark AI connection as IN PROGRESS for meeting:', meetingId);
         

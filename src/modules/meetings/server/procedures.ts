@@ -18,6 +18,7 @@ import {
   cleanupConnection,
   cleanupOldConnections
 } from "@/lib/ai-connection-tracker";
+import { AISingletonGuard } from "@/lib/ai-singleton-guard";
 
 export const meetingsRouter = createTRPCRouter({
   generateChatToken: protectedProcedure.mutation(async ({ ctx }) => {
@@ -244,18 +245,36 @@ export const meetingsRouter = createTRPCRouter({
   triggerAI: protectedProcedure
     .input(z.object({ meetingId: z.string() }))
     .mutation(async ({ input, ctx }) => {
+      const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
       console.log('=== TRIGGER AI PROCEDURE CALLED ===');
+      console.log('Request ID:', requestId);
       console.log('Meeting ID:', input.meetingId);
       console.log('User ID:', ctx.auth.user.id);
       console.log('Timestamp:', new Date().toISOString());
+      console.log('Call stack preview:', new Error().stack?.split('\n').slice(1, 5).join('\n'));
       
-      // FIRST: Check database tracking to prevent any duplicates
+      // STEP 1: Use AI Singleton Guard for absolute protection
+      console.log('=== AI SINGLETON GUARD CHECK ===');
+      console.log('Request ID:', requestId);
+      
+      if (AISingletonGuard.isLocked(input.meetingId)) {
+        console.log('SINGLETON GUARD: Meeting already locked in memory');
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'AI is already active for this meeting. Only one AI per meeting is allowed.',
+        });
+      }
+      
+      // STEP 2: Check database tracking to prevent any duplicates
       const existingConnection = await getConnectionState(input.meetingId);
       console.log('=== DATABASE CONNECTION CHECK ===');
+      console.log('Request ID:', requestId);
       console.log('Existing connection found:', existingConnection ? 'YES' : 'NO');
       
       if (existingConnection) {
         console.log('DUPLICATE PREVENTED: AI connection already exists for meeting:', input.meetingId);
+        console.log('Request ID:', requestId);
         console.log('Existing connection details:', {
           meetingId: existingConnection.meetingId,
           agentId: existingConnection.agentId,
@@ -264,22 +283,15 @@ export const meetingsRouter = createTRPCRouter({
           ageInMinutes: (Date.now() - existingConnection.createdAt.getTime()) / (1000 * 60)
         });
         
-        // If connection is in progress, reject immediately
-        if (existingConnection.isInProgress) {
-          throw new TRPCError({
-            code: 'CONFLICT',
-            message: 'AI connection is already in progress for this meeting. Please wait.',
-          });
-        }
-        
-        // If connection is complete but recent, also reject
+        // ALWAYS reject if any connection exists (in progress or completed)
         throw new TRPCError({
           code: 'CONFLICT',
-          message: 'AI agent is already connected to this meeting.',
+          message: 'AI is already connected to this meeting. Only one AI per meeting is allowed.',
         });
       }
       
       console.log('=== NO EXISTING CONNECTION - PROCEEDING ===');
+      console.log('Request ID:', requestId);
       
       try {
         console.log('Looking for meeting in database...');
@@ -304,6 +316,8 @@ export const meetingsRouter = createTRPCRouter({
         }
 
         if (!existingMeeting) {
+          // Clean up lock on error
+          await cleanupConnection(input.meetingId);
           throw new TRPCError({
             code: 'NOT_FOUND',
             message: 'Meeting not found',
@@ -316,28 +330,28 @@ export const meetingsRouter = createTRPCRouter({
           .where(eq(agents.id, existingMeeting.agentId));
 
         if (!existingAgent) {
+          // Clean up lock on error
+          await cleanupConnection(input.meetingId);
           throw new TRPCError({
             code: 'NOT_FOUND',
             message: 'Agent not found',
           });
         }
 
-        // ATOMICALLY mark connection as in progress to prevent other triggers
-        console.log('=== ATTEMPTING TO ACQUIRE DATABASE LOCK ===');
-        const lockAcquired = await markConnectionInProgress(input.meetingId, existingAgent.id);
+        // STEP 3: Try to acquire the singleton guard lock
+        const guardLockAcquired = await AISingletonGuard.checkAndLock(input.meetingId, existingAgent.id);
         
-        console.log('Lock acquisition result:', lockAcquired);
-        
-        if (!lockAcquired) {
-          console.log('LOCK ACQUISITION FAILED - Another process is already connecting');
+        if (!guardLockAcquired) {
+          console.log('SINGLETON GUARD: Failed to acquire lock');
           throw new TRPCError({
             code: 'CONFLICT',
             message: 'Another AI connection is already in progress for this meeting.',
           });
         }
         
-        console.log('=== LOCK ACQUIRED SUCCESSFULLY ===');
-        console.log('Database lock acquired for meeting:', input.meetingId, 'agent:', existingAgent.id);
+        console.log('=== SINGLETON GUARD LOCK ACQUIRED ===');
+        console.log('Request ID:', requestId);
+        console.log('Guard lock acquired for meeting:', input.meetingId, 'agent:', existingAgent.id);
 
         const call = streamVideo.video.call("default", input.meetingId);
         
@@ -451,22 +465,45 @@ export const meetingsRouter = createTRPCRouter({
         // Add event listeners for debugging
         realtimeClient.on('session.created', () => {
           console.log('Manual trigger: OpenAI session created');
+          console.log('Request ID:', requestId);
         });
         
         realtimeClient.on('session.updated', () => {
           console.log('Manual trigger: OpenAI session updated');
+          console.log('Request ID:', requestId);
         });
         
         realtimeClient.on('conversation.item.created', (event: unknown) => {
           console.log('Manual trigger: OpenAI conversation item created:', event);
+          console.log('Request ID:', requestId);
         });
         
         realtimeClient.on('response.audio_transcript.delta', (event: unknown) => {
           console.log('Manual trigger: OpenAI audio transcript:', event);
+          console.log('Request ID:', requestId);
+        });
+
+        realtimeClient.on('input_audio_buffer.speech_started', (event: unknown) => {
+          console.log('VOICE ACTIVITY DETECTED: Speech started');
+          console.log('Request ID:', requestId);
+          console.log('Event:', event);
+        });
+
+        realtimeClient.on('input_audio_buffer.speech_stopped', (event: unknown) => {
+          console.log('VOICE ACTIVITY DETECTED: Speech stopped');
+          console.log('Request ID:', requestId);
+          console.log('Event:', event);
+        });
+
+        realtimeClient.on('response.created', (event: unknown) => {
+          console.log('OpenAI response created (might indicate new conversation):');
+          console.log('Request ID:', requestId);
+          console.log('Event:', event);
         });
         
         realtimeClient.on('error', (event: unknown) => {
           console.error('Manual trigger: OpenAI error:', event);
+          console.log('Request ID:', requestId);
         });
 
         realtimeClient.updateSession({
@@ -481,9 +518,9 @@ When you first join the call, introduce yourself briefly with something like "He
           },
           turn_detection: {
             type: 'server_vad',
-            threshold: 0.3,
+            threshold: 0.5, // Increased from 0.3 to make it less sensitive
             prefix_padding_ms: 300,
-            silence_duration_ms: 1000
+            silence_duration_ms: 2000 // Increased from 1000ms to reduce false triggers
           },
           tool_choice: 'auto'
         });
@@ -497,17 +534,20 @@ When you first join the call, introduce yourself briefly with something like "He
         }, 2000);
 
         console.log('Manual AI trigger completed successfully');
+        console.log('Request ID:', requestId);
 
         return { success: true, message: 'AI agent connected successfully', agentName: existingAgent.name };
       } catch (error) {
         console.error('=== ERROR IN TRIGGER AI ===');
+        console.error('Request ID:', requestId);
         console.error('Error details:', error);
         console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace');
         console.error('Error message:', error instanceof Error ? error.message : String(error));
         
         // ALWAYS clean up tracking on any error
         await cleanupConnection(input.meetingId);
-        console.log('Cleaned up global tracking due to error for meeting:', input.meetingId);
+        await AISingletonGuard.release(input.meetingId);
+        console.log('Cleaned up tracking and singleton guard due to error for meeting:', input.meetingId);
         
         // Check for specific mask function error
         if (error instanceof Error && error.message.includes('mask is not a function')) {
