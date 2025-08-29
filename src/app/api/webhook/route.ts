@@ -22,6 +22,20 @@ const openaiClient = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY, 
 });
 
+// Track active AI connections to prevent duplicates
+const activeAIConnections = new Map<string, { timestamp: number, agentId: string }>();
+
+// Clean up old connections every 5 minutes
+setInterval(() => {
+    const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+    for (const [meetingId, connection] of activeAIConnections.entries()) {
+        if (connection.timestamp < fiveMinutesAgo) {
+            activeAIConnections.delete(meetingId);
+            console.log('Cleaned up old AI connection tracking for meeting:', meetingId);
+        }
+    }
+}, 5 * 60 * 1000);
+
 function verifySignatureWithSDK(body: string, signature: string): boolean {
     return streamVideo.verifyWebhook(body, signature);
 }
@@ -90,6 +104,33 @@ export async function POST(req: NextRequest) {
 
         console.log('Session started - auto-triggering AI agent for meeting:', meetingId);
 
+        // Check if AI is already connected to this meeting
+        const existingConnection = activeAIConnections.get(meetingId);
+        if (existingConnection) {
+            console.log('AI already connected to meeting:', meetingId, 'at', new Date(existingConnection.timestamp));
+            console.log('Existing agent ID:', existingConnection.agentId);
+            return NextResponse.json({ message: "AI agent already connected to this meeting" });
+        }
+
+        // Get agent details first to validate
+        const [meetingAgent] = await db
+            .select()
+            .from(agents)
+            .where(eq(agents.id, existingMeeting.agentId));
+
+        if (!meetingAgent) {
+            console.log('Agent not found for meeting:', meetingId);
+            return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+        }
+
+        // Mark this connection as in progress to prevent duplicates
+        activeAIConnections.set(meetingId, {
+            timestamp: Date.now(),
+            agentId: meetingAgent.id
+        });
+
+        console.log('Marked AI connection in progress for meeting:', meetingId, 'agent:', meetingAgent.id);
+
         await db
             .update(meetings)
             .set({
@@ -98,19 +139,9 @@ export async function POST(req: NextRequest) {
             })
             .where(eq(meetings.id, existingMeeting.id));
 
-        const [existingAgent] = await db
-            .select()
-            .from(agents)
-            .where(eq(agents.id, existingMeeting.agentId));
-
-            if (!existingAgent) {
-                console.log('Agent not found for meeting:', meetingId);
-                return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-            }
-
-        console.log('Connecting OpenAI agent:', existingAgent.id);
-        console.log('Agent name:', existingAgent.name);
-        console.log('Agent instructions:', existingAgent.instructions);
+        console.log('Connecting OpenAI agent:', meetingAgent.id);
+        console.log('Agent name:', meetingAgent.name);
+        console.log('Agent instructions:', meetingAgent.instructions);
         
         try {
             const call = streamVideo.video.call("default", meetingId);
@@ -118,8 +149,8 @@ export async function POST(req: NextRequest) {
             // Ensure the agent user exists in Stream
             await streamVideo.upsertUsers([
                 {
-                    id: existingAgent.id,
-                    name: existingAgent.name,
+                    id: meetingAgent.id,
+                    name: meetingAgent.name,
                     role: 'user',
                 }
             ]);
@@ -128,7 +159,7 @@ export async function POST(req: NextRequest) {
             
             console.log('Attempting to connect OpenAI with call:', call.cid);
             console.log('Using API key:', process.env.OPENAI_API_KEY ? 'present' : 'missing');
-            console.log('Agent user ID:', existingAgent.id);
+            console.log('Agent user ID:', meetingAgent.id);
             
             // Add a small delay to ensure everything is properly initialized
             await new Promise(resolve => setTimeout(resolve, 1000));
@@ -149,7 +180,7 @@ export async function POST(req: NextRequest) {
                     realtimeClient = await streamVideo.video.connectOpenAi({
                         call,
                         openAiApiKey: process.env.OPENAI_API_KEY!,
-                        agentUserId: existingAgent.id,
+                        agentUserId: meetingAgent.id,
                     });
                     
                     console.log('Webhook OpenAI connection successful');
@@ -209,11 +240,11 @@ export async function POST(req: NextRequest) {
             });
             
             realtimeClient.updateSession({
-                instructions: `${existingAgent.instructions}
+                instructions: `${meetingAgent.instructions}
 
 Important: You are participating in a live voice conversation. Actively listen and respond when appropriate. Always be conversational and helpful. When you hear someone speaking, feel free to respond naturally.
 
-When you first join the call, introduce yourself briefly with something like "Hello! I'm ${existingAgent.name}, your AI assistant. I'm here and ready to help with the meeting."`,
+When you first join the call, introduce yourself briefly with something like "Hello! I'm ${meetingAgent.name}, your AI assistant. I'm here and ready to help with the meeting."`,
                 voice: 'alloy',
                 input_audio_transcription: {
                     model: 'whisper-1'
@@ -231,7 +262,7 @@ When you first join the call, introduce yourself briefly with something like "He
             setTimeout(() => {
                 realtimeClient.sendUserMessageContent([{
                     type: 'input_text',
-                    text: `Hello! I'm ${existingAgent.name}, your AI assistant. I just joined the call automatically and I'm ready to help.`
+                    text: `Hello! I'm ${meetingAgent.name}, your AI assistant. I just joined the call automatically and I'm ready to help.`
                 }]);
             }, 2000);
             
@@ -240,6 +271,10 @@ When you first join the call, introduce yourself briefly with something like "He
             console.error('Error connecting OpenAI agent:', error);
             console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
             console.error('Error message:', error instanceof Error ? error.message : String(error));
+            
+            // Clean up the tracking since connection failed
+            activeAIConnections.delete(meetingId);
+            console.log('Cleaned up failed AI connection tracking for meeting:', meetingId);
             
             return NextResponse.json({ error: "Failed to connect AI agent", details: error instanceof Error ? error.message : String(error) }, { status: 500 });
         }
@@ -267,6 +302,10 @@ When you first join the call, introduce yourself briefly with something like "He
         if (!meetingId) {
             return NextResponse.json({ error: "Missing meetingId in call custom data" }, { status: 400 });
         }
+
+        // Clean up AI connection tracking when call ends
+        activeAIConnections.delete(meetingId);
+        console.log('Cleaned up AI connection tracking for ended meeting:', meetingId);
 
         await db
             .update(meetings)
