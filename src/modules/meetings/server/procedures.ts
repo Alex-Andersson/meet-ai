@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import JSONL from "jsonl-parse-stringify";
 import { createTRPCRouter, premiumProcedure, protectedProcedure } from "@/trpc/init";
-import { meetings, agents, user } from "@/db/schema";
+import { meetings, agents, user, aiConnectionLocks } from "@/db/schema";
 import { z } from "zod";
 import { and, count, desc, eq, getTableColumns, ilike, inArray, sql } from "drizzle-orm";
 import { DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE } from "@/constants";
@@ -247,12 +247,22 @@ export const meetingsRouter = createTRPCRouter({
       console.log('=== TRIGGER AI PROCEDURE CALLED ===');
       console.log('Meeting ID:', input.meetingId);
       console.log('User ID:', ctx.auth.user.id);
+      console.log('Timestamp:', new Date().toISOString());
       
       // FIRST: Check database tracking to prevent any duplicates
       const existingConnection = await getConnectionState(input.meetingId);
+      console.log('=== DATABASE CONNECTION CHECK ===');
+      console.log('Existing connection found:', existingConnection ? 'YES' : 'NO');
+      
       if (existingConnection) {
         console.log('DUPLICATE PREVENTED: AI connection already exists for meeting:', input.meetingId);
-        console.log('Existing connection details:', existingConnection);
+        console.log('Existing connection details:', {
+          meetingId: existingConnection.meetingId,
+          agentId: existingConnection.agentId,
+          isInProgress: existingConnection.isInProgress,
+          createdAt: existingConnection.createdAt,
+          ageInMinutes: (Date.now() - existingConnection.createdAt.getTime()) / (1000 * 60)
+        });
         
         // If connection is in progress, reject immediately
         if (existingConnection.isInProgress) {
@@ -268,6 +278,8 @@ export const meetingsRouter = createTRPCRouter({
           message: 'AI agent is already connected to this meeting.',
         });
       }
+      
+      console.log('=== NO EXISTING CONNECTION - PROCEEDING ===');
       
       try {
         console.log('Looking for meeting in database...');
@@ -311,15 +323,21 @@ export const meetingsRouter = createTRPCRouter({
         }
 
         // ATOMICALLY mark connection as in progress to prevent other triggers
+        console.log('=== ATTEMPTING TO ACQUIRE DATABASE LOCK ===');
         const lockAcquired = await markConnectionInProgress(input.meetingId, existingAgent.id);
         
+        console.log('Lock acquisition result:', lockAcquired);
+        
         if (!lockAcquired) {
-          console.log('Failed to acquire connection lock - another process is already connecting');
+          console.log('LOCK ACQUISITION FAILED - Another process is already connecting');
           throw new TRPCError({
             code: 'CONFLICT',
             message: 'Another AI connection is already in progress for this meeting.',
           });
         }
+        
+        console.log('=== LOCK ACQUIRED SUCCESSFULLY ===');
+        console.log('Database lock acquired for meeting:', input.meetingId, 'agent:', existingAgent.id);
 
         const call = streamVideo.video.call("default", input.meetingId);
         
@@ -524,6 +542,27 @@ When you first join the call, introduce yourself briefly with something like "He
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to clean up AI locks',
+        });
+      }
+    }),
+
+  // Debug procedure to view current AI connection locks
+  debugAILocks: protectedProcedure
+    .query(async () => {
+      try {
+        const locks = await db.select().from(aiConnectionLocks).limit(50);
+        return {
+          success: true,
+          locks: locks.map(lock => ({
+            ...lock,
+            ageInMinutes: (Date.now() - lock.createdAt.getTime()) / (1000 * 60)
+          }))
+        };
+      } catch (error) {
+        console.error('Error fetching AI locks:', error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to fetch AI locks',
         });
       }
     }),

@@ -99,6 +99,19 @@ export const CallActive = ({ onLeave, meetingName, meetingId }: Props) => {
   const handleJoinAI = async () => {
     console.log('=== JOIN AI BUTTON CLICKED ===');
     console.log('Meeting ID:', meetingId);
+    console.log('Current aiJoined state:', aiJoined);
+    console.log('Current isPending state:', isPending);
+    
+    // Double-check state to prevent multiple calls
+    if (aiJoined) {
+      console.log('AI already joined, ignoring click');
+      return;
+    }
+    
+    if (isPending) {
+      console.log('Request already in progress, ignoring click');
+      return;
+    }
     
     if (!meetingId) {
       console.error('No meeting ID available');
