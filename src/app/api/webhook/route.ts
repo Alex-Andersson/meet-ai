@@ -16,24 +16,11 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { generatedAvatarUri } from "@/lib/avatar";
 import { streamChat } from "@/lib/stream-chat";
+import { cleanupConnection } from "@/lib/ai-connection-tracker";
 
 const openaiClient = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY, 
 });
-
-// Track active AI connections to prevent duplicates
-const activeAIConnections = new Map<string, { timestamp: number, agentId: string }>();
-
-// Clean up old connections every 5 minutes
-setInterval(() => {
-    const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
-    for (const [meetingId, connection] of activeAIConnections.entries()) {
-        if (connection.timestamp < fiveMinutesAgo) {
-            activeAIConnections.delete(meetingId);
-            console.log('Cleaned up old AI connection tracking for meeting:', meetingId);
-        }
-    }
-}, 5 * 60 * 1000);
 
 function verifySignatureWithSDK(body: string, signature: string): boolean {
     return streamVideo.verifyWebhook(body, signature);
@@ -127,8 +114,7 @@ export async function POST(req: NextRequest) {
         }
 
         // Clean up AI connection tracking when call ends
-        activeAIConnections.delete(meetingId);
-        console.log('Cleaned up AI connection tracking for ended meeting:', meetingId);
+        cleanupConnection(meetingId);
 
         await db
             .update(meetings)

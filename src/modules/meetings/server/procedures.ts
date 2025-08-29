@@ -11,6 +11,12 @@ import { MeetingStatus, StreamTranscriptItem } from "../types";
 import { streamVideo } from "@/lib/stream-video";
 import { generatedAvatarUri } from "@/lib/avatar";
 import { streamChat } from "@/lib/stream-chat";
+import { 
+  getConnectionState, 
+  markConnectionInProgress, 
+  markConnectionCompleted, 
+  cleanupConnection 
+} from "@/lib/ai-connection-tracker";
 
 export const meetingsRouter = createTRPCRouter({
   generateChatToken: protectedProcedure.mutation(async ({ ctx }) => {
@@ -241,6 +247,27 @@ export const meetingsRouter = createTRPCRouter({
       console.log('Meeting ID:', input.meetingId);
       console.log('User ID:', ctx.auth.user.id);
       
+      // FIRST: Check global tracking to prevent any duplicates
+      const existingConnection = getConnectionState(input.meetingId);
+      if (existingConnection) {
+        console.log('DUPLICATE PREVENTED: AI connection already exists for meeting:', input.meetingId);
+        console.log('Existing connection details:', existingConnection);
+        
+        // If connection is in progress, reject immediately
+        if (existingConnection.inProgress) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: 'AI connection is already in progress for this meeting. Please wait.',
+          });
+        }
+        
+        // If connection is complete but recent, also reject
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'AI agent is already connected to this meeting.',
+        });
+      }
+      
       try {
         console.log('Looking for meeting in database...');
         const [existingMeeting] = await db
@@ -282,26 +309,12 @@ export const meetingsRouter = createTRPCRouter({
           });
         }
 
-        // Update meeting status
-        await db
-          .update(meetings)
-          .set({
-            status: "active",
-            startedAt: new Date(),
-          })
-          .where(eq(meetings.id, existingMeeting.id));
+        // MARK CONNECTION AS IN PROGRESS to prevent other triggers
+        markConnectionInProgress(input.meetingId, existingAgent.id);
 
         const call = streamVideo.video.call("default", input.meetingId);
         
-        // Check if AI agent is already connected to prevent duplicates - use the same system as webhook
-        // Note: Since we're in a different process, we'll check the meeting status instead
-        if (existingMeeting.status === "active") {
-            console.log('Meeting already active, AI may already be connected');
-            // Still allow manual trigger as a way to retry if needed
-            console.log('Allowing manual trigger override for active meeting');
-        }
-        
-        // Check Stream call state to see if there are already AI participants
+        // Double-check Stream call state to ensure no AI is already connected
         try {
             const callState = await call.get();
             console.log('Call state retrieved, checking for existing AI participants');
@@ -311,14 +324,28 @@ export const meetingsRouter = createTRPCRouter({
             const agentAlreadyInCall = participants.some(p => p.user?.id === existingAgent.id);
             
             if (agentAlreadyInCall) {
-                console.log('Agent already in call, skipping connection to prevent duplicates');
-                return { success: false, message: 'AI agent is already connected to this call', agentName: existingAgent.name };
+                console.log('Agent already in call participants, canceling connection');
+                // Clean up the tracking since agent is already connected
+                cleanupConnection(input.meetingId);
+                throw new TRPCError({
+                  code: 'CONFLICT',
+                  message: 'AI agent is already connected to this call',
+                });
             }
             
         } catch (callError) {
             console.log('Could not get call state for duplicate check:', callError);
-            console.log('Proceeding with connection attempt');
+            // If we can't check call state, continue but be extra careful
         }
+        
+        // Update meeting status
+        await db
+          .update(meetings)
+          .set({
+            status: "active",
+            startedAt: new Date(),
+          })
+          .where(eq(meetings.id, existingMeeting.id));
         
         // Ensure the agent user exists in Stream
         await streamVideo.upsertUsers([
@@ -362,6 +389,9 @@ export const meetingsRouter = createTRPCRouter({
               console.log('Mask function error detected, implementing workaround...');
               
               if (retryCount >= maxRetries) {
+                // Clean up tracking on failure
+                cleanupConnection(input.meetingId);
+                
                 throw new TRPCError({
                   code: 'INTERNAL_SERVER_ERROR',
                   message: 'OpenAI connection failed after multiple attempts due to SDK initialization issue. Please try again in a few moments.',
@@ -371,18 +401,25 @@ export const meetingsRouter = createTRPCRouter({
               // Continue to next retry
               continue;
             } else {
-              // For other errors, fail immediately
+              // For other errors, clean up and fail immediately
+              cleanupConnection(input.meetingId);
               throw error;
             }
           }
         }
         
         if (!realtimeClient) {
+          // Clean up tracking on failure
+          cleanupConnection(input.meetingId);
+          
           throw new TRPCError({
             code: 'INTERNAL_SERVER_ERROR',
             message: 'Failed to establish OpenAI connection after all retry attempts.',
           });
         }
+
+        // CONNECTION SUCCESSFUL - Mark as completed (not in progress)
+        markConnectionCompleted(input.meetingId, existingAgent.id);
 
         // Add event listeners for debugging
         realtimeClient.on('session.created', () => {
@@ -441,6 +478,10 @@ When you first join the call, introduce yourself briefly with something like "He
         console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace');
         console.error('Error message:', error instanceof Error ? error.message : String(error));
         
+        // ALWAYS clean up tracking on any error
+        cleanupConnection(input.meetingId);
+        console.log('Cleaned up global tracking due to error for meeting:', input.meetingId);
+        
         // Check for specific mask function error
         if (error instanceof Error && error.message.includes('mask is not a function')) {
           console.error('MASK ERROR DETECTED in manual trigger: This appears to be a known issue with OpenAI Realtime API');
@@ -449,6 +490,11 @@ When you first join the call, introduce yourself briefly with something like "He
             code: 'INTERNAL_SERVER_ERROR',
             message: 'OpenAI connection failed due to SDK issue (mask function). This is a known temporary issue. Please try again in a few moments.',
           });
+        }
+        
+        // Re-throw existing TRPCError or create new one
+        if (error instanceof TRPCError) {
+          throw error;
         }
         
         throw new TRPCError({
