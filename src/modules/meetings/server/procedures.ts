@@ -305,11 +305,57 @@ export const meetingsRouter = createTRPCRouter({
         console.log('Connecting OpenAI agent manually:', existingAgent.id);
         console.log('Agent instructions:', existingAgent.instructions);
         
-        const realtimeClient = await streamVideo.video.connectOpenAi({
-          call,
-          openAiApiKey: process.env.OPENAI_API_KEY!,
-          agentUserId: existingAgent.id,
-        });
+        // Implement retry logic for the mask function issue
+        let realtimeClient: Awaited<ReturnType<typeof streamVideo.video.connectOpenAi>> | null = null;
+        let retryCount = 0;
+        const maxRetries = 3;
+        
+        while (retryCount < maxRetries) {
+          try {
+            // Add progressive delay for each retry
+            if (retryCount > 0) {
+              console.log(`Retry attempt ${retryCount}/${maxRetries} for OpenAI connection...`);
+              await new Promise(resolve => setTimeout(resolve, retryCount * 2000));
+            }
+            
+            realtimeClient = await streamVideo.video.connectOpenAi({
+              call,
+              openAiApiKey: process.env.OPENAI_API_KEY!,
+              agentUserId: existingAgent.id,
+            });
+            
+            console.log('OpenAI connection successful');
+            break;
+            
+          } catch (error) {
+            retryCount++;
+            console.error(`OpenAI connection attempt ${retryCount} failed:`, error);
+            
+            if (error instanceof Error && error.message.includes('mask is not a function')) {
+              console.log('Mask function error detected, implementing workaround...');
+              
+              if (retryCount >= maxRetries) {
+                throw new TRPCError({
+                  code: 'INTERNAL_SERVER_ERROR',
+                  message: 'OpenAI connection failed after multiple attempts due to SDK initialization issue. Please try again in a few moments.',
+                });
+              }
+              
+              // Continue to next retry
+              continue;
+            } else {
+              // For other errors, fail immediately
+              throw error;
+            }
+          }
+        }
+        
+        if (!realtimeClient) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Failed to establish OpenAI connection after all retry attempts.',
+          });
+        }
 
         // Add event listeners for debugging
         realtimeClient.on('session.created', () => {

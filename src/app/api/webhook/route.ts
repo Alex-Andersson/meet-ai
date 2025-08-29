@@ -4,6 +4,7 @@ import {
   CallEndedEvent,
   CallTranscriptionReadyEvent,
   CallSessionParticipantLeftEvent,
+  CallSessionParticipantJoinedEvent,
   CallRecordingReadyEvent,
   CallSessionStartedEvent,
   MessageNewEvent,
@@ -127,11 +128,57 @@ export async function POST(req: NextRequest) {
             // Add a small delay to ensure everything is properly initialized
             await new Promise(resolve => setTimeout(resolve, 1000));
             
-            const realtimeClient = await streamVideo.video.connectOpenAi({
-                call,
-                openAiApiKey: process.env.OPENAI_API_KEY!,
-                agentUserId: existingAgent.id,
-            });
+            // Implement retry logic for the mask function issue
+            let realtimeClient: Awaited<ReturnType<typeof streamVideo.video.connectOpenAi>> | null = null;
+            let retryCount = 0;
+            const maxRetries = 3;
+            
+            while (retryCount < maxRetries) {
+                try {
+                    // Add progressive delay for each retry
+                    if (retryCount > 0) {
+                        console.log(`Webhook retry attempt ${retryCount}/${maxRetries} for OpenAI connection...`);
+                        await new Promise(resolve => setTimeout(resolve, retryCount * 2000));
+                    }
+                    
+                    realtimeClient = await streamVideo.video.connectOpenAi({
+                        call,
+                        openAiApiKey: process.env.OPENAI_API_KEY!,
+                        agentUserId: existingAgent.id,
+                    });
+                    
+                    console.log('Webhook OpenAI connection successful');
+                    break;
+                    
+                } catch (error) {
+                    retryCount++;
+                    console.error(`Webhook OpenAI connection attempt ${retryCount} failed:`, error);
+                    
+                    if (error instanceof Error && error.message.includes('mask is not a function')) {
+                        console.log('Webhook: Mask function error detected, implementing workaround...');
+                        
+                        if (retryCount >= maxRetries) {
+                            return NextResponse.json({ 
+                                error: "Failed to connect AI agent", 
+                                details: 'OpenAI connection failed after multiple attempts due to SDK initialization issue. Please try manual trigger.' 
+                            }, { status: 500 });
+                        }
+                        
+                        // Continue to next retry
+                        continue;
+                    } else {
+                        // For other errors, fail immediately
+                        throw error;
+                    }
+                }
+            }
+            
+            if (!realtimeClient) {
+                return NextResponse.json({ 
+                    error: "Failed to connect AI agent", 
+                    details: 'Failed to establish OpenAI connection after all retry attempts.' 
+                }, { status: 500 });
+            }
 
             console.log('OpenAI client connected, updating session...');
             
@@ -189,48 +236,195 @@ When you first join the call, introduce yourself briefly with something like "He
             console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
             console.error('Error message:', error instanceof Error ? error.message : String(error));
             
-            // Check for specific mask function error
-            if (error instanceof Error && error.message.includes('mask is not a function')) {
-                console.error('MASK ERROR DETECTED: This appears to be a known issue with OpenAI Realtime API');
-                console.error('Attempting alternative connection method...');
-                
-                // Try a simple retry after a delay
-                setTimeout(async () => {
-                    try {
-                        console.log('Retrying OpenAI connection...');
-                        const call = streamVideo.video.call("default", meetingId);
-                        const retryClient = await streamVideo.video.connectOpenAi({
-                            call,
-                            openAiApiKey: process.env.OPENAI_API_KEY!,
-                            agentUserId: existingAgent.id,
-                        });
-                        console.log('Retry successful!');
+            return NextResponse.json({ error: "Failed to connect AI agent", details: error instanceof Error ? error.message : String(error) }, { status: 500 });
+        }
+    } else if (eventType === "call.session_participant_joined") {
+        console.log('Processing call.session_participant_joined event');
+        const event = payload as CallSessionParticipantJoinedEvent;
+        const meetingId = event.call_cid.split(":")[1];
+        const joinedUserId = event.participant?.user?.id;
+
+        console.log('Participant joined - Meeting ID:', meetingId);
+        console.log('Participant joined - User ID:', joinedUserId);
+
+        if (!meetingId) {
+            return NextResponse.json({ error: "Missing meetingId in call custom data" }, { status: 400 });
+        }
+
+        // Get meeting details
+        const [existingMeeting] = await db
+            .select()
+            .from(meetings)
+            .where(eq(meetings.id, meetingId));
+
+        if (!existingMeeting) {
+            console.log('Meeting not found for participant join event');
+            return NextResponse.json({ error: "Meeting not found" }, { status: 404 });
+        }
+
+        // Get agent details
+        const [existingAgent] = await db
+            .select()
+            .from(agents)
+            .where(eq(agents.id, existingMeeting.agentId));
+
+        if (!existingAgent) {
+            console.log('Agent not found for meeting:', meetingId);
+            return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+        }
+
+        // Check if the joined user is NOT the agent (avoid triggering AI when AI joins)
+        if (joinedUserId === existingAgent.id) {
+            console.log('AI agent joined, skipping auto-trigger');
+            return NextResponse.json({ message: "AI agent joined, no action needed" });
+        }
+
+        // Check if meeting is not already active (avoid duplicate triggers)
+        if (existingMeeting.status === "active") {
+            console.log('Meeting already active, skipping auto-trigger');
+            return NextResponse.json({ message: "Meeting already active" });
+        }
+
+        console.log('Real user joined, auto-triggering AI agent:', existingAgent.id);
+
+        try {
+            // Update meeting status to active
+            await db
+                .update(meetings)
+                .set({
+                    status: "active",
+                    startedAt: new Date(),
+                })
+                .where(eq(meetings.id, existingMeeting.id));
+
+            const call = streamVideo.video.call("default", meetingId);
+            
+            // Ensure the agent user exists in Stream
+            await streamVideo.upsertUsers([
+                {
+                    id: existingAgent.id,
+                    name: existingAgent.name,
+                    role: 'user',
+                }
+            ]);
+            
+            console.log('Auto-connecting OpenAI agent on participant join:', existingAgent.id);
+            
+            // Add a small delay to ensure everything is properly initialized
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Implement retry logic for the mask function issue
+            let realtimeClient: Awaited<ReturnType<typeof streamVideo.video.connectOpenAi>> | null = null;
+            let retryCount = 0;
+            const maxRetries = 3;
+            
+            while (retryCount < maxRetries) {
+                try {
+                    // Add progressive delay for each retry
+                    if (retryCount > 0) {
+                        console.log(`Auto-trigger retry attempt ${retryCount}/${maxRetries} for OpenAI connection...`);
+                        await new Promise(resolve => setTimeout(resolve, retryCount * 2000));
+                    }
+                    
+                    realtimeClient = await streamVideo.video.connectOpenAi({
+                        call,
+                        openAiApiKey: process.env.OPENAI_API_KEY!,
+                        agentUserId: existingAgent.id,
+                    });
+                    
+                    console.log('Auto-trigger OpenAI connection successful');
+                    break;
+                    
+                } catch (error) {
+                    retryCount++;
+                    console.error(`Auto-trigger OpenAI connection attempt ${retryCount} failed:`, error);
+                    
+                    if (error instanceof Error && error.message.includes('mask is not a function')) {
+                        console.log('Auto-trigger: Mask function error detected, implementing workaround...');
                         
-                        retryClient.updateSession({
-                            instructions: `${existingAgent.instructions}
+                        if (retryCount >= maxRetries) {
+                            console.error('Auto-trigger failed after all retries');
+                            return NextResponse.json({ 
+                                error: "Failed to auto-connect AI agent", 
+                                details: 'OpenAI connection failed after multiple attempts due to SDK initialization issue.' 
+                            }, { status: 500 });
+                        }
+                        
+                        // Continue to next retry
+                        continue;
+                    } else {
+                        // For other errors, fail immediately
+                        throw error;
+                    }
+                }
+            }
+            
+            if (!realtimeClient) {
+                return NextResponse.json({ 
+                    error: "Failed to auto-connect AI agent", 
+                    details: 'Failed to establish OpenAI connection after all retry attempts.' 
+                }, { status: 500 });
+            }
+
+            console.log('Auto-trigger OpenAI client connected, updating session...');
+            
+            // Add event listeners for debugging
+            realtimeClient.on('session.created', () => {
+                console.log('Auto-trigger: OpenAI session created');
+            });
+            
+            realtimeClient.on('session.updated', () => {
+                console.log('Auto-trigger: OpenAI session updated');
+            });
+            
+            realtimeClient.on('conversation.item.created', (event: unknown) => {
+                console.log('Auto-trigger: OpenAI conversation item created:', event);
+            });
+            
+            realtimeClient.on('response.audio_transcript.delta', (event: unknown) => {
+                console.log('Auto-trigger: OpenAI audio transcript:', event);
+            });
+            
+            realtimeClient.on('error', (event: unknown) => {
+                console.error('Auto-trigger: OpenAI error:', event);
+            });
+            
+            realtimeClient.updateSession({
+                instructions: `${existingAgent.instructions}
 
 Important: You are participating in a live voice conversation. Actively listen and respond when appropriate. Always be conversational and helpful. When you hear someone speaking, feel free to respond naturally.
 
 When you first join the call, introduce yourself briefly with something like "Hello! I'm ${existingAgent.name}, your AI assistant. I'm here and ready to help with the meeting."`,
-                            voice: 'alloy',
-                            input_audio_transcription: {
-                                model: 'whisper-1'
-                            },
-                            turn_detection: {
-                                type: 'server_vad',
-                                threshold: 0.3,
-                                prefix_padding_ms: 300,
-                                silence_duration_ms: 1000
-                            },
-                            tool_choice: 'auto'
-                        });
-                    } catch (retryError) {
-                        console.error('Retry also failed:', retryError);
-                    }
-                }, 2000);
-            }
+                voice: 'alloy',
+                input_audio_transcription: {
+                    model: 'whisper-1'
+                },
+                turn_detection: {
+                    type: 'server_vad',
+                    threshold: 0.3,
+                    prefix_padding_ms: 300,
+                    silence_duration_ms: 1000
+                },
+                tool_choice: 'auto'
+            });
             
-            return NextResponse.json({ error: "Failed to connect AI agent", details: error instanceof Error ? error.message : String(error) }, { status: 500 });
+            // Send an initial greeting message after a short delay
+            setTimeout(() => {
+                realtimeClient.sendUserMessageContent([{
+                    type: 'input_text',
+                    text: `Hello! I'm ${existingAgent.name}, your AI assistant. I just joined the call automatically and I'm ready to help.`
+                }]);
+            }, 3000);
+            
+            console.log('Auto-trigger: OpenAI agent session configured successfully');
+            return NextResponse.json({ message: "AI agent auto-connected successfully" });
+            
+        } catch (error) {
+            console.error('Auto-trigger: Error connecting OpenAI agent:', error);
+            return NextResponse.json({ 
+                error: "Failed to auto-connect AI agent", 
+                details: error instanceof Error ? error.message : String(error) 
+            }, { status: 500 });
         }
     } else if (eventType === "call.session_participant_left") {
         const event = payload as CallSessionParticipantLeftEvent;
