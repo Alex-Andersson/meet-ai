@@ -4,7 +4,6 @@ import {
   CallEndedEvent,
   CallTranscriptionReadyEvent,
   CallSessionParticipantLeftEvent,
-  CallSessionParticipantJoinedEvent,
   CallRecordingReadyEvent,
   CallSessionStartedEvent,
   MessageNewEvent,
@@ -70,16 +69,18 @@ export async function POST(req: NextRequest) {
     console.log('Full payload:', JSON.stringify(payload, null, 2));
     
     if (eventType === "call.session_started") {
-        console.log('Processing call.session_started event');
+        console.log('Processing call.session_started event - DISABLED FOR MANUAL CONTROL');
         const event = payload as CallSessionStartedEvent;
         const meetingId = event.call.custom?.meetingId;
 
         console.log('Meeting ID from event:', meetingId);
+        console.log('Session started but auto-trigger disabled - user must manually trigger AI');
 
         if (!meetingId) {
             return NextResponse.json({ error: "Missing meetingId in call custom data" }, { status: 400 });
         }
 
+        // Only update the meeting status to "upcoming" when session starts, don't auto-trigger AI
         const [existingMeeting] = await db
             .select()
             .from(meetings)
@@ -96,188 +97,10 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Meeting not found or already completed/cancelled/processing" }, { status: 404 });
         }
 
-        // Check if meeting is already active to prevent duplicate triggers
-        if (existingMeeting.status === "active") {
-            console.log('Meeting already active, skipping auto-trigger from session_started');
-            return NextResponse.json({ message: "Meeting already active" });
-        }
-
-        console.log('Session started - auto-triggering AI agent for meeting:', meetingId);
-
-        // Check if AI is already connected to this meeting
-        const existingConnection = activeAIConnections.get(meetingId);
-        if (existingConnection) {
-            console.log('AI already connected to meeting:', meetingId, 'at', new Date(existingConnection.timestamp));
-            console.log('Existing agent ID:', existingConnection.agentId);
-            return NextResponse.json({ message: "AI agent already connected to this meeting" });
-        }
-
-        // Get agent details first to validate
-        const [meetingAgent] = await db
-            .select()
-            .from(agents)
-            .where(eq(agents.id, existingMeeting.agentId));
-
-        if (!meetingAgent) {
-            console.log('Agent not found for meeting:', meetingId);
-            return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-        }
-
-        // Mark this connection as in progress to prevent duplicates
-        activeAIConnections.set(meetingId, {
-            timestamp: Date.now(),
-            agentId: meetingAgent.id
-        });
-
-        console.log('Marked AI connection in progress for meeting:', meetingId, 'agent:', meetingAgent.id);
-
-        await db
-            .update(meetings)
-            .set({
-                status: "active",
-                startedAt: new Date(),
-            })
-            .where(eq(meetings.id, existingMeeting.id));
-
-        console.log('Connecting OpenAI agent:', meetingAgent.id);
-        console.log('Agent name:', meetingAgent.name);
-        console.log('Agent instructions:', meetingAgent.instructions);
+        // Only mark the session as started, but don't activate the meeting or connect AI
+        console.log('Session started for meeting:', meetingId, '- waiting for manual AI trigger');
         
-        try {
-            const call = streamVideo.video.call("default", meetingId);
-            
-            // Ensure the agent user exists in Stream
-            await streamVideo.upsertUsers([
-                {
-                    id: meetingAgent.id,
-                    name: meetingAgent.name,
-                    role: 'user',
-                }
-            ]);
-            
-            console.log('Agent user upserted successfully');
-            
-            console.log('Attempting to connect OpenAI with call:', call.cid);
-            console.log('Using API key:', process.env.OPENAI_API_KEY ? 'present' : 'missing');
-            console.log('Agent user ID:', meetingAgent.id);
-            
-            // Add a small delay to ensure everything is properly initialized
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-            // Implement retry logic for the mask function issue
-            let realtimeClient: Awaited<ReturnType<typeof streamVideo.video.connectOpenAi>> | null = null;
-            let retryCount = 0;
-            const maxRetries = 3;
-            
-            while (retryCount < maxRetries) {
-                try {
-                    // Add progressive delay for each retry
-                    if (retryCount > 0) {
-                        console.log(`Webhook retry attempt ${retryCount}/${maxRetries} for OpenAI connection...`);
-                        await new Promise(resolve => setTimeout(resolve, retryCount * 2000));
-                    }
-                    
-                    realtimeClient = await streamVideo.video.connectOpenAi({
-                        call,
-                        openAiApiKey: process.env.OPENAI_API_KEY!,
-                        agentUserId: meetingAgent.id,
-                    });
-                    
-                    console.log('Webhook OpenAI connection successful');
-                    break;
-                    
-                } catch (error) {
-                    retryCount++;
-                    console.error(`Webhook OpenAI connection attempt ${retryCount} failed:`, error);
-                    
-                    if (error instanceof Error && error.message.includes('mask is not a function')) {
-                        console.log('Webhook: Mask function error detected, implementing workaround...');
-                        
-                        if (retryCount >= maxRetries) {
-                            return NextResponse.json({ 
-                                error: "Failed to connect AI agent", 
-                                details: 'OpenAI connection failed after multiple attempts due to SDK initialization issue. Please try manual trigger.' 
-                            }, { status: 500 });
-                        }
-                        
-                        // Continue to next retry
-                        continue;
-                    } else {
-                        // For other errors, fail immediately
-                        throw error;
-                    }
-                }
-            }
-            
-            if (!realtimeClient) {
-                return NextResponse.json({ 
-                    error: "Failed to connect AI agent", 
-                    details: 'Failed to establish OpenAI connection after all retry attempts.' 
-                }, { status: 500 });
-            }
-
-            console.log('OpenAI client connected, updating session...');
-            
-            // Add event listeners for debugging
-            realtimeClient.on('session.created', () => {
-                console.log('OpenAI session created');
-            });
-            
-            realtimeClient.on('session.updated', () => {
-                console.log('OpenAI session updated');
-            });
-            
-            realtimeClient.on('conversation.item.created', (event: unknown) => {
-                console.log('OpenAI conversation item created:', event);
-            });
-            
-            realtimeClient.on('response.audio_transcript.delta', (event: unknown) => {
-                console.log('OpenAI audio transcript:', event);
-            });
-            
-            realtimeClient.on('error', (event: unknown) => {
-                console.error('OpenAI error:', event);
-            });
-            
-            realtimeClient.updateSession({
-                instructions: `${meetingAgent.instructions}
-
-Important: You are participating in a live voice conversation. Actively listen and respond when appropriate. Always be conversational and helpful. When you hear someone speaking, feel free to respond naturally.
-
-When you first join the call, introduce yourself briefly with something like "Hello! I'm ${meetingAgent.name}, your AI assistant. I'm here and ready to help with the meeting."`,
-                voice: 'alloy',
-                input_audio_transcription: {
-                    model: 'whisper-1'
-                },
-                turn_detection: {
-                    type: 'server_vad',
-                    threshold: 0.3,
-                    prefix_padding_ms: 300,
-                    silence_duration_ms: 1000
-                },
-                tool_choice: 'auto'
-            });
-            
-            // Send an initial greeting message
-            setTimeout(() => {
-                realtimeClient.sendUserMessageContent([{
-                    type: 'input_text',
-                    text: `Hello! I'm ${meetingAgent.name}, your AI assistant. I just joined the call automatically and I'm ready to help.`
-                }]);
-            }, 2000);
-            
-            console.log('OpenAI agent session configured successfully');
-        } catch (error) {
-            console.error('Error connecting OpenAI agent:', error);
-            console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
-            console.error('Error message:', error instanceof Error ? error.message : String(error));
-            
-            // Clean up the tracking since connection failed
-            activeAIConnections.delete(meetingId);
-            console.log('Cleaned up failed AI connection tracking for meeting:', meetingId);
-            
-            return NextResponse.json({ error: "Failed to connect AI agent", details: error instanceof Error ? error.message : String(error) }, { status: 500 });
-        }
+        return NextResponse.json({ message: "Session started - waiting for manual AI trigger" });
     } else if (eventType === "call.session_participant_joined") {
         console.log('Processing call.session_participant_joined event - DISABLED for now to prevent loops');
         console.log('Event details:', JSON.stringify(payload, null, 2));

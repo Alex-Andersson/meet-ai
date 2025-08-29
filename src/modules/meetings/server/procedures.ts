@@ -293,16 +293,31 @@ export const meetingsRouter = createTRPCRouter({
 
         const call = streamVideo.video.call("default", input.meetingId);
         
-        // Check if AI agent is already connected to prevent duplicates
+        // Check if AI agent is already connected to prevent duplicates - use the same system as webhook
+        // Note: Since we're in a different process, we'll check the meeting status instead
+        if (existingMeeting.status === "active") {
+            console.log('Meeting already active, AI may already be connected');
+            // Still allow manual trigger as a way to retry if needed
+            console.log('Allowing manual trigger override for active meeting');
+        }
+        
+        // Check Stream call state to see if there are already AI participants
         try {
             const callState = await call.get();
-            console.log('Call state retrieved for duplicate check');
+            console.log('Call state retrieved, checking for existing AI participants');
             
-            // Try to get call participants through query or other means
-            // For now, we'll rely on the webhook tracking instead
-            console.log('Proceeding with connection - webhook should prevent duplicates');
+            // Check if the agent is already in the call participants
+            const participants = callState.call?.session?.participants || [];
+            const agentAlreadyInCall = participants.some(p => p.user?.id === existingAgent.id);
+            
+            if (agentAlreadyInCall) {
+                console.log('Agent already in call, skipping connection to prevent duplicates');
+                return { success: false, message: 'AI agent is already connected to this call', agentName: existingAgent.name };
+            }
+            
         } catch (callError) {
-            console.log('Could not get call state, proceeding with connection:', callError);
+            console.log('Could not get call state for duplicate check:', callError);
+            console.log('Proceeding with connection attempt');
         }
         
         // Ensure the agent user exists in Stream
