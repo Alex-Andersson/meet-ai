@@ -20,6 +20,7 @@ import {
 } from "@/lib/ai-connection-tracker";
 import { AISingletonGuard } from "@/lib/ai-singleton-guard";
 import { EmergencyAIGuard } from "@/lib/emergency-ai-guard";
+import { AbsoluteAILock } from "@/lib/absolute-ai-lock";
 
 export const meetingsRouter = createTRPCRouter({
   generateChatToken: protectedProcedure.mutation(async ({ ctx }) => {
@@ -254,11 +255,26 @@ export const meetingsRouter = createTRPCRouter({
       console.log('User ID:', ctx.auth.user.id);
       console.log('Timestamp:', new Date().toISOString());
       console.log('Active connections before check:', EmergencyAIGuard.getActiveConnections());
+      console.log('Absolute lock stats:', AbsoluteAILock.getStats());
+      
+      // STEP -1: ABSOLUTE LOCK - Ultimate protection
+      if (!AbsoluteAILock.tryLock(input.meetingId)) {
+        console.log('🚨 ABSOLUTE LOCK BLOCKED REQUEST');
+        console.log('Request ID:', requestId);
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'AI connection blocked by absolute lock. Another request is in progress.',
+        });
+      }
+      
+      console.log('✅ ABSOLUTE LOCK ACQUIRED - Proceeding');
+      console.log('Request ID:', requestId);
       
       // STEP 0: EMERGENCY GUARD - Absolute first line of defense
       if (!EmergencyAIGuard.attemptConnection(input.meetingId)) {
         console.log('🚨 EMERGENCY GUARD BLOCKED REQUEST');
         console.log('Request ID:', requestId);
+        AbsoluteAILock.release(input.meetingId); // Release absolute lock
         throw new TRPCError({
           code: 'CONFLICT',
           message: 'AI connection blocked by emergency guard. Only one AI per meeting allowed.',
@@ -272,6 +288,8 @@ export const meetingsRouter = createTRPCRouter({
       console.log('=== AI SINGLETON GUARD CHECK ===');
       console.log('Request ID:', requestId);      if (AISingletonGuard.isLocked(input.meetingId)) {
         console.log('SINGLETON GUARD: Meeting already locked in memory');
+        EmergencyAIGuard.forceCleanup(input.meetingId); // Clean up emergency guard
+        AbsoluteAILock.release(input.meetingId); // Clean up absolute lock
         throw new TRPCError({
           code: 'CONFLICT',
           message: 'AI is already active for this meeting. Only one AI per meeting is allowed.',
@@ -296,6 +314,8 @@ export const meetingsRouter = createTRPCRouter({
         });
         
         // ALWAYS reject if any connection exists (in progress or completed)
+        EmergencyAIGuard.forceCleanup(input.meetingId); // Clean up emergency guard
+        AbsoluteAILock.release(input.meetingId); // Clean up absolute lock
         throw new TRPCError({
           code: 'CONFLICT',
           message: 'AI is already connected to this meeting. Only one AI per meeting is allowed.',
@@ -328,8 +348,10 @@ export const meetingsRouter = createTRPCRouter({
         }
 
         if (!existingMeeting) {
-          // Clean up lock on error
+          // Clean up ALL guards on error
           await cleanupConnection(input.meetingId);
+          EmergencyAIGuard.forceCleanup(input.meetingId);
+          AbsoluteAILock.release(input.meetingId);
           throw new TRPCError({
             code: 'NOT_FOUND',
             message: 'Meeting not found',
@@ -342,8 +364,10 @@ export const meetingsRouter = createTRPCRouter({
           .where(eq(agents.id, existingMeeting.agentId));
 
         if (!existingAgent) {
-          // Clean up lock on error
+          // Clean up ALL guards on error
           await cleanupConnection(input.meetingId);
+          EmergencyAIGuard.forceCleanup(input.meetingId);
+          AbsoluteAILock.release(input.meetingId);
           throw new TRPCError({
             code: 'NOT_FOUND',
             message: 'Agent not found',
@@ -355,6 +379,8 @@ export const meetingsRouter = createTRPCRouter({
         
         if (!guardLockAcquired) {
           console.log('SINGLETON GUARD: Failed to acquire lock');
+          EmergencyAIGuard.forceCleanup(input.meetingId);
+          AbsoluteAILock.release(input.meetingId);
           throw new TRPCError({
             code: 'CONFLICT',
             message: 'Another AI connection is already in progress for this meeting.',
@@ -542,6 +568,10 @@ When you first join the call, introduce yourself briefly with something like "He
 
         console.log('Manual AI trigger completed successfully');
         console.log('Request ID:', requestId);
+        
+        // Release absolute lock on success
+        AbsoluteAILock.release(input.meetingId);
+        console.log('Released absolute lock on successful completion');
 
         return { success: true, message: 'AI agent connected successfully', agentName: existingAgent.name };
       } catch (error) {
@@ -555,6 +585,7 @@ When you first join the call, introduce yourself briefly with something like "He
         await cleanupConnection(input.meetingId);
         await AISingletonGuard.release(input.meetingId);
         EmergencyAIGuard.forceCleanup(input.meetingId);
+        AbsoluteAILock.release(input.meetingId);
         console.log('🧹 CLEANED UP ALL GUARDS due to error for meeting:', input.meetingId);
         console.log('Request ID:', requestId);
         
@@ -599,6 +630,7 @@ When you first join the call, introduce yourself briefly with something like "He
       
       const status = {
         meetingId: input.meetingId,
+        absoluteLock: AbsoluteAILock.getStats(),
         emergencyGuard: {
           isActive: isEmergencyActive,
           allActiveConnections: allEmergencyConnections
@@ -625,6 +657,7 @@ When you first join the call, introduce yourself briefly with something like "He
       await cleanupConnection(input.meetingId);
       await AISingletonGuard.cleanup(input.meetingId);
       EmergencyAIGuard.forceCleanup(input.meetingId);
+      AbsoluteAILock.release(input.meetingId);
       
       console.log('✅ All AI guards cleaned up for meeting:', input.meetingId);
       
